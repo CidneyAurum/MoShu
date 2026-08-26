@@ -1,0 +1,29 @@
+# Gradle / Kotlin build state
+.gradle/
+.kotlin/
+**/build/
+
+# Local Android configuration
+local.properties
+.idea/
+*.iml
+
+# Signing and secrets
+*.jks
+*.keystore
+keystore.properties
+*.env
+*.secret
+
+# Generated packages and diagnostics
+*.apk
+*.aab
+*.log
+*.hprof
+captures/
+screenshots/
+artifacts/
+
+# OS files
+.DS_Store
+Thumbs.db

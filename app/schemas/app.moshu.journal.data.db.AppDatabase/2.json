@@ -1,0 +1,46 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 2,
+    "identityHash": "moshu-schema-v2",
+    "entities": [
+      {
+        "tableName": "entries",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `content` TEXT NOT NULL, `categoryId` INTEGER NOT NULL, `tagsJson` TEXT NOT NULL, `summary` TEXT NOT NULL, `mood` TEXT NOT NULL, `enriched` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL)",
+        "fields": [
+          {"fieldPath":"id","columnName":"id","affinity":"INTEGER","notNull":true},
+          {"fieldPath":"content","columnName":"content","affinity":"TEXT","notNull":true},
+          {"fieldPath":"categoryId","columnName":"categoryId","affinity":"INTEGER","notNull":true},
+          {"fieldPath":"tagsJson","columnName":"tagsJson","affinity":"TEXT","notNull":true},
+          {"fieldPath":"summary","columnName":"summary","affinity":"TEXT","notNull":true},
+          {"fieldPath":"mood","columnName":"mood","affinity":"TEXT","notNull":true},
+          {"fieldPath":"enriched","columnName":"enriched","affinity":"INTEGER","notNull":true},
+          {"fieldPath":"createdAt","columnName":"createdAt","affinity":"INTEGER","notNull":true}
+        ],
+        "primaryKey":{"autoGenerate":true,"columnNames":["id"]},
+        "indices":[],
+        "foreignKeys":[]
+      },
+      {
+        "tableName": "todos",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `text` TEXT NOT NULL, `sourceEntryId` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `dueEpochDay` INTEGER, `done` INTEGER NOT NULL)",
+        "fields": [
+          {"fieldPath":"id","columnName":"id","affinity":"INTEGER","notNull":true},
+          {"fieldPath":"text","columnName":"text","affinity":"TEXT","notNull":true},
+          {"fieldPath":"sourceEntryId","columnName":"sourceEntryId","affinity":"INTEGER","notNull":true},
+          {"fieldPath":"createdAt","columnName":"createdAt","affinity":"INTEGER","notNull":true},
+          {"fieldPath":"dueEpochDay","columnName":"dueEpochDay","affinity":"INTEGER","notNull":false},
+          {"fieldPath":"done","columnName":"done","affinity":"INTEGER","notNull":true}
+        ],
+        "primaryKey":{"autoGenerate":true,"columnNames":["id"]},
+        "indices":[{"name":"index_todos_sourceEntryId","unique":false,"columnNames":["sourceEntryId"],"orders":[],"createSql":"CREATE INDEX IF NOT EXISTS `index_todos_sourceEntryId` ON `${TABLE_NAME}` (`sourceEntryId`)"}],
+        "foreignKeys":[]
+      }
+    ],
+    "views": [],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'moshu-schema-v2')"
+    ]
+  }
+}

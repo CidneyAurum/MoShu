@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 两片书页，也是“枢”的双轴；曲线保留手写墨迹的温度。 -->
+    <path
+        android:fillColor="#17181A"
+        android:pathData="M32,28 C39,25 47,27 53,32 L53,78 C47,73 40,71 32,74 Z" />
+    <path
+        android:fillColor="#17181A"
+        android:pathData="M56,32 C62,27 70,25 77,28 L77,74 C69,71 62,73 56,78 Z" />
+    <path
+        android:fillColor="#F1EDE4"
+        android:pathData="M52,36 L55,36 L55,78 L52,78 Z" />
+    <!-- 朱砂枢点 -->
+    <path
+        android:fillColor="#C95447"
+        android:pathData="M69,39 m-6,0 a6,6 0 1,1 12,0 a6,6 0 1,1 -12,0" />
+</vector>
