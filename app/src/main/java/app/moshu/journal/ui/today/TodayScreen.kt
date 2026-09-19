@@ -31,9 +31,12 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Send
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.EditNote
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Lightbulb
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -83,7 +86,8 @@ fun TodayScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val today = LocalDate.now()
-    val prompt = remember(today) { prompts[today.dayOfYear % prompts.size] }
+    var promptOffset by remember(today) { mutableStateOf(0) }
+    val prompt = prompts[(today.dayOfYear + promptOffset) % prompts.size]
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -108,9 +112,12 @@ fun TodayScreen(
                     Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Rounded.Lightbulb, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                         Spacer(Modifier.size(12.dp))
-                        Column {
+                        Column(Modifier.weight(1f)) {
                             Text("此刻可以记", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                             Text(prompt, style = MaterialTheme.typography.bodyLarge)
+                        }
+                        IconButton(onClick = { promptOffset++ }) {
+                            Icon(Icons.Rounded.Refresh, contentDescription = "换一条提示", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(19.dp))
                         }
                     }
                 }
@@ -119,6 +126,7 @@ fun TodayScreen(
                     entryCount = state.entries.size,
                     pendingCount = state.pendingCount,
                     todoCount = state.activeTodos.size,
+                    onMemory = onOpenMemory,
                     onActions = onOpenActions,
                 )
             }
@@ -129,7 +137,7 @@ fun TodayScreen(
             }
         }
         if (state.entries.isEmpty()) {
-            item { MoShuEmptyState("今天还很轻", "记下一句话或一张图，让今天留下轮廓。") }
+            item { MoShuEmptyState("今天还很轻", "记下一句话或一张图，让今天留下轮廓。", icon = Icons.Rounded.EditNote) }
         } else {
             items(state.entries.take(4), key = { it.id }) { entry ->
                 EntryCard(
@@ -177,6 +185,9 @@ private fun CaptureComposer(saving: Boolean, onAdd: (String, List<Uri>, () -> Un
                 minLines = 3,
                 maxLines = 7,
                 shape = RoundedCornerShape(18.dp),
+                supportingText = {
+                    if (draft.length > 400) Text("${draft.length} 字", style = MaterialTheme.typography.labelSmall)
+                },
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                 keyboardActions = KeyboardActions(onSend = { submit() }),
             )
@@ -195,6 +206,16 @@ private fun CaptureComposer(saving: Boolean, onAdd: (String, List<Uri>, () -> Un
                     if (images.size > 4) {
                         Box(Modifier.size(62.dp).background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) {
                             Text("+${images.size - 4}", style = MaterialTheme.typography.labelLarge)
+                        }
+                    }
+                    if (images.size < ImageStorage.MAX_ATTACHMENTS) {
+                        Box(
+                            Modifier.size(62.dp).clip(RoundedCornerShape(12.dp)).clickable {
+                                picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                            }.background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(Icons.Rounded.Add, contentDescription = "继续添加图片", tint = MaterialTheme.colorScheme.secondary)
                         }
                     }
                 }
@@ -224,11 +245,11 @@ private fun CaptureComposer(saving: Boolean, onAdd: (String, List<Uri>, () -> Un
 }
 
 @Composable
-private fun TodayStats(entryCount: Int, pendingCount: Int, todoCount: Int, onActions: () -> Unit) {
+private fun TodayStats(entryCount: Int, pendingCount: Int, todoCount: Int, onMemory: () -> Unit, onActions: () -> Unit) {
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-        StatCard("记录", entryCount.toString(), Modifier.weight(1f))
+        StatCard("记录", entryCount.toString(), Modifier.weight(1f).clip(MaterialTheme.shapes.medium).clickable(onClick = onMemory))
         StatCard("整理中", pendingCount.toString(), Modifier.weight(1f))
-        StatCard("待行动", todoCount.toString(), Modifier.weight(1f).clickable(onClick = onActions))
+        StatCard("待行动", todoCount.toString(), Modifier.weight(1f).clip(MaterialTheme.shapes.medium).clickable(onClick = onActions))
     }
 }
 

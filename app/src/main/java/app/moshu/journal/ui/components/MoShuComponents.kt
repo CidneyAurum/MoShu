@@ -22,8 +22,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.EditNote
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.PushPin
+import androidx.compose.material.icons.rounded.SearchOff
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -45,6 +47,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.moshu.journal.data.db.AttachmentEntity
@@ -108,7 +111,12 @@ fun MoShuSectionTitle(title: String, action: String? = null, onAction: (() -> Un
 }
 
 @Composable
-fun MoShuEmptyState(title: String, body: String, modifier: Modifier = Modifier) {
+fun MoShuEmptyState(
+    title: String,
+    body: String,
+    modifier: Modifier = Modifier,
+    icon: androidx.compose.ui.graphics.vector.ImageVector = Icons.Rounded.AutoAwesome,
+) {
     Column(
         modifier = modifier.fillMaxWidth().padding(32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -116,11 +124,16 @@ fun MoShuEmptyState(title: String, body: String, modifier: Modifier = Modifier) 
     ) {
         Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.size(58.dp)) {
             Box(contentAlignment = Alignment.Center) {
-                Icon(Icons.Rounded.AutoAwesome, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
             }
         }
         Text(title, style = MaterialTheme.typography.titleMedium)
-        Text(body, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            body,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
     }
 }
 
@@ -179,11 +192,16 @@ fun EntryCard(
 }
 
 @Composable
-fun EntryImageStrip(attachments: List<AttachmentEntity>, onClick: ((AttachmentEntity) -> Unit)? = null) {
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+fun EntryImageStrip(
+    attachments: List<AttachmentEntity>,
+    modifier: Modifier = Modifier,
+    onClick: ((AttachmentEntity) -> Unit)? = null,
+) {
+    val shape = RoundedCornerShape(12.dp)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = modifier.fillMaxWidth()) {
         attachments.forEach { attachment ->
             Box(
-                modifier = Modifier.weight(1f).aspectRatio(1.35f).clip(RoundedCornerShape(12.dp))
+                modifier = Modifier.weight(1f).aspectRatio(1.35f).clip(shape)
                     .background(MaterialTheme.colorScheme.surfaceVariant)
                     .then(if (onClick != null) Modifier.clickable { onClick(attachment) } else Modifier),
                 contentAlignment = Alignment.Center,
@@ -200,7 +218,15 @@ fun LocalImage(path: String, modifier: Modifier = Modifier, contentScale: Conten
     var bitmap by remember(path) { mutableStateOf<ImageBitmap?>(null) }
     LaunchedEffect(path) {
         bitmap = withContext(Dispatchers.IO) {
-            BitmapFactory.decodeFile(path)?.asImageBitmap()
+            runCatching {
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(path, bounds)
+                if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@runCatching null
+                // 按显示尺寸下采样，避免列表中解码全尺寸原图造成卡顿与内存压力
+                var sample = 1
+                while (bounds.outWidth / (sample * 2) >= 720 && bounds.outHeight / (sample * 2) >= 720) sample *= 2
+                BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })?.asImageBitmap()
+            }.getOrNull()
         }
     }
     if (bitmap != null) {

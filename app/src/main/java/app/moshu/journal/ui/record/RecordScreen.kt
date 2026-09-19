@@ -15,8 +15,10 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.EditNote
 import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.SearchOff
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -96,6 +98,7 @@ fun MemoryScreen(
                 MoShuEmptyState(
                     if (state.filters.query.isBlank()) "还没有这类记忆" else "没有找到相关记忆",
                     if (state.filters.query.isBlank()) "换个筛选看看，或回到今天写下一笔。" else "试试更短的关键词或标签。",
+                    icon = if (state.filters.query.isBlank()) Icons.Rounded.EditNote else Icons.Rounded.SearchOff,
                 )
             }
         } else {
