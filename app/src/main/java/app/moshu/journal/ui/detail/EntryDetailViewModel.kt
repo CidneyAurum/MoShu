@@ -38,6 +38,10 @@ class EntryDetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel() {
     private val messageError = MutableStateFlow(false)
     private val loaded = MutableStateFlow(false)
 
+    /** `[[链接]]` 解析结果与反链。放 ViewModel 而不是 Composable 里，避免每次重组都查库。 */
+    val links = MutableStateFlow<List<EntryEntity>>(emptyList())
+    val backlinks = MutableStateFlow<List<EntryEntity>>(emptyList())
+
     private data class Flags(val busy: Boolean, val message: String, val messageError: Boolean, val loaded: Boolean)
 
     private val flags = combine(busy, message, messageError, loaded) { isBusy, note, isError, isLoaded ->
@@ -86,6 +90,37 @@ class EntryDetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel() {
         viewModelScope.launch {
             val entry = app.database.entryDao().byId(entryId) ?: return@launch
             app.journal.togglePinned(entry)
+        }
+    }
+
+    fun toggleStarred() {
+        viewModelScope.launch {
+            val entry = app.database.entryDao().byId(entryId) ?: return@launch
+            app.journal.toggleStarred(entry)
+        }
+    }
+
+    /** 正文里 `[[标题]]` 指向的条目。 */
+    fun outgoingLinks() {
+        viewModelScope.launch {
+            val entry = app.database.entryDao().byId(entryId) ?: return@launch
+            links.value = app.journal.outgoingLinks(entry)
+        }
+    }
+
+    /** 反链：别的条目引用了本条标题。 */
+    fun loadBacklinks() {
+        viewModelScope.launch {
+            val entry = app.database.entryDao().byId(entryId) ?: return@launch
+            backlinks.value = app.journal.backlinks(entry)
+        }
+    }
+
+    /** 点开一个 `[[链接]]`；找不到同名条目时给一句明确提示，而不是静默无反应。 */
+    fun openLink(title: String, onOpen: (Long) -> Unit) {
+        viewModelScope.launch {
+            val target = app.journal.openLink(title)
+            if (target == null) note("没有找到标题为「$title」的记忆", error = true) else onOpen(target.id)
         }
     }
 

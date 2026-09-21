@@ -39,6 +39,8 @@ data class TodayUiState(
     val online: Boolean = true,
     /** 首次查询返回前为 true，避免冷启动先闪一下「今天还很轻」。 */
     val loading: Boolean = true,
+    /** 往年今日：过去几年同一天写下的记录，最近的年份在前。没有内容时为空。 */
+    val memories: List<EntryEntity> = emptyList(),
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -60,9 +62,11 @@ class TodayViewModel : ViewModel() {
     private val input = combine(saveState, draft, enriched) { save, text, done ->
         Input(save, text, done)
     }
-
     /** 当天零点。跨过午夜后要重算，否则「今天」会一直停在昨天。 */
     private val dayStart = MutableStateFlow(startOfToday())
+
+    /** 往年今日是「按天」变化的数据，不必随每次写库重查，跟着 dayStart 刷新即可。 */
+    private val memories = MutableStateFlow<List<EntryEntity>>(emptyList())
 
     private data class SaveState(val saving: Boolean = false, val message: String = "")
     private data class Feed(val pendingCount: Int, val online: Boolean, val loaded: Boolean)
@@ -76,6 +80,10 @@ class TodayViewModel : ViewModel() {
         viewModelScope.launch {
             val stored = app.drafts.composerDraft.first()
             if (stored.isNotBlank() && draft.value.isBlank()) draft.value = stored
+        }
+        // 跟着「今天」一起刷新：跨天后「往年今日」也要换成新的那一天。
+        viewModelScope.launch {
+            dayStart.collect { memories.value = app.journal.onThisDay() }
         }
     }
 
@@ -97,7 +105,8 @@ class TodayViewModel : ViewModel() {
                     app.database.todoDao().observeActive(),
                     feed,
                     input,
-                ) { attachments, todos, feedState, inState ->
+                    memories,
+                ) { attachments, todos, feedState, inState, memoryList ->
                     TodayUiState(
                         entries = entries,
                         attachments = attachments.groupBy { it.entryId },
@@ -108,6 +117,7 @@ class TodayViewModel : ViewModel() {
                         draft = inState.draft,
                         justEnrichedId = inState.enriched,
                         online = feedState.online,
+                        memories = memoryList,
                         loading = !feedState.loaded,
                     )
                 }

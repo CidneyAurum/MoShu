@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  长按桌面图标可用的三个入口。
+  只做「少点几下」的加速：写一条直接进今天页，搜一搜直接展开搜索框。
+-->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="compose"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_compose"
+        android:shortcutLongLabel="@string/shortcut_compose_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="app.moshu.journal"
+            android:targetClass="app.moshu.journal.MainActivity" />
+        <categories android:name="android.shortcut.conversation" />
+    </shortcut>
+
+    <shortcut
+        android:shortcutId="search"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_search"
+        android:shortcutLongLabel="@string/shortcut_search_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="app.moshu.journal"
+            android:targetClass="app.moshu.journal.MainActivity"
+            android:data="moshu://search" />
+        <categories android:name="android.shortcut.conversation" />
+    </shortcut>
+</shortcuts>

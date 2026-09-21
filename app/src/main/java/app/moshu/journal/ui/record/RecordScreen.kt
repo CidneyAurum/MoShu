@@ -24,6 +24,7 @@ import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SearchOff
+import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DatePicker
@@ -139,6 +140,14 @@ fun MemoryScreen(
                     leadingIcon = { Icon(Icons.Rounded.ErrorOutline, null) },
                 )
             }
+            item {
+                FilterChip(
+                    selected = state.filters.starredOnly,
+                    onClick = { viewModel.setStarredOnly(!state.filters.starredOnly) },
+                    label = { Text("收藏") },
+                    leadingIcon = { Icon(Icons.Rounded.Star, null) },
+                )
+            }
             // 长列表里靠滚动找某一天太低效，给一个直接定位的入口。
             item {
                 FilterChip(
@@ -225,6 +234,7 @@ fun MemoryScreen(
                                 onEdit = { onOpenEntry(entry.id) },
                                 onDuplicate = { viewModel.duplicate(entry) },
                                 onTogglePin = { viewModel.togglePinned(entry) },
+                                onToggleStar = { viewModel.toggleStarred(entry) },
                                 onShare = { shareEntry(context, entry) },
                                 onDelete = { viewModel.delete(entry) },
                             ),

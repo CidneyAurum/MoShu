@@ -41,8 +41,21 @@ class MoShuApp : Application() {
         Notifications.ensureChannel(this)
         Notifications.ensureAiChannel(this)
         cleanupOrphanAttachments()
+        purgeExpiredTrash()
         recoverInterruptedEnrichments()
         restoreReminders()
+    }
+
+    /**
+     * 清理回收站里超过保留期的条目。
+     *
+     * 回收站不会自己缩小，而图片是磁盘占用的大头；不主动收口的话，
+     * 「删了但没删干净」会悄悄吃掉空间。放在启动时做，用户感知不到卡顿。
+     */
+    private fun purgeExpiredTrash() {
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            runCatching { journal.purgeExpiredTrash() }
+        }
     }
 
     /**

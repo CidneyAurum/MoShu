@@ -29,7 +29,19 @@ data class EntryEntity(
     // 产出这份元数据的模型与提示词版本；改进提示词后据此找出需要重做的条目
     @ColumnInfo(defaultValue = "''") val aiModel: String = "",
     @ColumnInfo(defaultValue = "0") val aiPromptVersion: Int = 0,
-)
+    /**
+     * 软删除时间戳；非空表示在回收站里。
+     *
+     * 用软删除而不是直接删行：撤销窗口只有几秒，而误删往往是过一会儿才发现的。
+     * 回收站保留期内可恢复，列表、搜索、统计默认都排除这些行。
+     */
+    @ColumnInfo(defaultValue = "0") val deletedAt: Long = 0,
+    /** 收藏。与「置顶」区分：收藏只是标记，不改变排序。 */
+    @ColumnInfo(defaultValue = "0") val isStarred: Boolean = false,
+) {
+    /** 是否在回收站中。 */
+    val inTrash: Boolean get() = deletedAt > 0L
+}
 
 object ManualMetadata {
     const val CATEGORY = 1

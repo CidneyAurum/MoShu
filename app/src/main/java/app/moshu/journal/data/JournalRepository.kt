@@ -27,6 +27,10 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import org.json.JSONArray
+import java.io.File
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -42,6 +46,20 @@ data class DeletedEntry(
     val removedTodos: List<TodoEntity>,
     val detachedTodos: List<TodoEntity>,
     val attachments: List<AttachmentEntity>,
+)
+
+/**
+ * 写作统计。全部由本地数据算出：字数按非空白字符计（中文场景比按空格分词更接近直觉）。
+ * [busiestHour] 为 0–23，没有记录时为 null。
+ */
+data class WritingStats(
+    val totalEntries: Int = 0,
+    val totalChars: Int = 0,
+    val averageChars: Int = 0,
+    val activeDays: Int = 0,
+    val longestStreak: Int = 0,
+    val busiestHour: Int? = null,
+    val firstAt: Long? = null,
 )
 
 class JournalRepository(
@@ -237,42 +255,285 @@ class JournalRepository(
     }
 
     /**
-     * 可撤销删除：只删数据库行，附件文件延后到撤销窗口结束再删。
-     * 返回快照供 [restoreEntry] 使用。
+     * 删除一条记忆：**进回收站**，不是立刻销毁。
+     *
+     * 返回快照供 [restoreEntry] 撤销。附件行与磁盘文件都不动——回收站里的条目仍然完整，
+     * 只有「彻底删除」或保留期结束时才真正清理文件。这比原先「8 秒后删文件」安全得多：
+     * 误删往往过一会儿才发现，而不是 8 秒内。
      */
     suspend fun deleteEntry(entryId: Long): DeletedEntry? {
         val entry = db.entryDao().byId(entryId) ?: return null
+        if (entry.inTrash) return null
         val attachments = db.attachmentDao().forEntry(entryId)
         val todos = db.todoDao().bySource(entryId)
+        val now = System.currentTimeMillis()
+        // AI 提取且用户没动过的行动随记忆一起消失（它们可由整理重新生成）；
+        // 用户自建或改过的留下，且保留 sourceEntryId —— 条目还在回收站里，恢复后链接依然有效。
         val removed = todos.filterNot { it.isUserCreated || it.userEdited }
         val detached = todos.filter { it.isUserCreated || it.userEdited }
         db.withTransaction {
-            // AI 提取且用户没动过的行动随记忆一起消失；用户自建或改过的留下，
-            // 但必须摘掉 sourceEntryId，否则「来自记忆」会指向一条已删除的记录。
-            detached.forEach { db.todoDao().update(it.copy(sourceEntryId = 0, updatedAt = System.currentTimeMillis())) }
             removed.forEach { db.todoDao().deleteById(it.id) }
-            db.entryDao().deleteById(entryId)
+            db.entryDao().markDeleted(entryId, now)
         }
-        scheduleEntryPurge(entryId, attachments)
         return DeletedEntry(entry, removed, detached, attachments)
     }
 
-    /** 撤销删除。条目会用原来的 uid 重建，附件行与文件都还在，无需重新导入。 */
+    /** 撤销删除。条目行还在（只是被标记），把状态清掉并把随删的 AI 行动补回来。 */
     suspend fun restoreEntry(deleted: DeletedEntry): Long {
         purgeJobs.remove(deleted.entry.id)?.cancel()
+        val now = System.currentTimeMillis()
         return db.withTransaction {
-            val newId = db.entryDao().insert(deleted.entry.copy(id = 0))
-            deleted.attachments.forEach { db.attachmentDao().insert(it.copy(id = 0, entryId = newId)) }
-            deleted.removedTodos.forEach { db.todoDao().insert(it.copy(id = 0, sourceEntryId = newId)) }
-            // 被摘掉来源链接的待办仍在表里，按 uid 找回并重新指向恢复后的条目。
+            db.entryDao().restoreFromTrash(deleted.entry.id, now)
+            deleted.removedTodos.forEach { db.todoDao().insert(it.copy(id = 0, sourceEntryId = deleted.entry.id)) }
             deleted.detachedTodos.forEach { todo ->
                 db.todoDao().byUid(todo.uid)?.let {
-                    db.todoDao().update(it.copy(sourceEntryId = newId, updatedAt = System.currentTimeMillis()))
+                    db.todoDao().update(it.copy(sourceEntryId = deleted.entry.id, updatedAt = now))
                 }
             }
-            newId
+            deleted.entry.id
         }
     }
+
+    /** 从回收站恢复（不带快照）：只清删除标记，条目与图片立即回到列表。 */
+    suspend fun restoreFromTrash(entryId: Long): Boolean {
+        val entry = db.entryDao().byId(entryId) ?: return false
+        if (!entry.inTrash) return false
+        db.entryDao().restoreFromTrash(entryId)
+        return true
+    }
+
+    /** 彻底删除一条（回收站内）：这次连附件文件一起清掉。 */
+    suspend fun purgeEntry(entryId: Long) {
+        val attachments = db.attachmentDao().forEntry(entryId)
+        val todos = db.todoDao().bySource(entryId)
+        db.withTransaction {
+            todos.forEach { db.todoDao().deleteById(it.id) }
+            attachments.forEach { db.attachmentDao().deleteById(it.id) }
+            db.entryDao().deleteById(entryId)
+        }
+        attachments.forEach(ImageStorage::delete)
+    }
+
+    suspend fun purgeAllTrash(): Int {
+        val ids = db.entryDao().trashOnce()
+        ids.forEach { purgeEntry(it.id) }
+        return ids.size
+    }
+
+    /**
+     * 清理超过保留期的回收站条目。启动时调用一次。
+     *
+     * 之所以要主动清理而不是留着：图片是磁盘占用的大头，回收站无限增长会悄悄吃掉空间。
+     */
+    suspend fun purgeExpiredTrash(now: Long = System.currentTimeMillis()): Int {
+        val cutoff = now - TRASH_RETENTION_MS
+        val ids = db.entryDao().expiredTrashIds(cutoff)
+        ids.forEach { purgeEntry(it) }
+        return ids.size
+    }
+
+    /** 收藏/取消收藏。 */
+    suspend fun setStarred(entryId: Long, starred: Boolean) {
+        db.entryDao().setStarred(entryId, starred)
+    }
+
+    suspend fun toggleStarred(entry: EntryEntity) {
+        db.entryDao().setStarred(entry.id, !entry.isStarred)
+    }
+
+    // ---------- 标签管理 ----------
+
+    /**
+     * 重命名标签：把 `from` 换成 `to`。
+     *
+     * 标签是存在 `tagsJson` 里的 JSON 数组，没有独立表，所以只能扫一遍回写。
+     * 条目量级是「个人日记」，一次全表扫描可以接受；换独立表反而要处理迁移与去重。
+     */
+    suspend fun renameTag(from: String, to: String): Int {
+        val target = to.trim()
+        if (from.isBlank() || target.isBlank() || from == target) return 0
+        return retag { tags -> tags.map { if (it == from) target else it } }
+    }
+
+    /** 合并标签：把 `from` 并入 `to`（等同重命名，但语义上允许 `to` 已存在）。 */
+    suspend fun mergeTag(from: String, to: String): Int = renameTag(from, to)
+
+    /** 删除标签：只从条目上摘掉，不删除条目本身。 */
+    suspend fun deleteTag(tag: String): Int = retag { tags -> tags.filterNot { it == tag } }
+
+    /** 全库标签与出现次数，按次数倒序。 */
+    suspend fun tagCounts(): List<Pair<String, Int>> {
+        val counts = mutableMapOf<String, Int>()
+        db.entryDao().allTagsJson().forEach { raw ->
+            parseTags(raw).forEach { tag -> counts[tag] = (counts[tag] ?: 0) + 1 }
+        }
+        return counts.entries.sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
+            .map { it.key to it.value }
+    }
+
+    private suspend fun retag(transform: (List<String>) -> List<String>): Int {
+        val all = db.entryDao().allOnce()
+        var changed = 0
+        db.withTransaction {
+            all.forEach { entry ->
+                val current = parseTags(entry.tagsJson)
+                val next = transform(current).distinct()
+                if (next != current) {
+                    db.entryDao().update(entry.copy(tagsJson = tagsJsonOf(next), updatedAt = System.currentTimeMillis()))
+                    changed++
+                }
+            }
+        }
+        return changed
+    }
+
+    // ---------- 往年今日 ----------
+
+    /**
+     * 往年今日：过去若干年里同一「月-日」的记录，年份由近到远。
+     *
+     * 用逐年的区间查询而不是把日期格式化后比较：后者要对全表做字符串函数，
+     * 无法用索引，而这里每天只需要几次范围扫描。
+     * 2 月 29 日在平年不存在，`minusYears` 会抛异常，按跳过处理。
+     */
+    suspend fun onThisDay(yearsBack: Int = ON_THIS_DAY_YEARS): List<EntryEntity> {
+        val today = LocalDate.now()
+        val zone = ZoneId.systemDefault()
+        val found = mutableListOf<EntryEntity>()
+        for (back in 1..yearsBack) {
+            val day = runCatching { today.minusYears(back.toLong()) }.getOrNull() ?: continue
+            val start = day.atStartOfDay(zone).toInstant().toEpochMilli()
+            val end = day.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
+            found += db.entryDao().between(start, end)
+        }
+        return found.sortedByDescending { it.createdAt }
+    }
+
+    // ---------- 写作统计 ----------
+
+    /**
+     * 写作统计。全部由本地数据算出，不涉及任何网络请求。
+     *
+     * 字数按「非空白字符数」计，中文场景下比按空格分词更接近直觉。
+     */
+    suspend fun writingStats(): WritingStats {
+        val entries = db.entryDao().allOnce()
+        val zone = ZoneId.systemDefault()
+        val byDay = entries.groupBy { Instant.ofEpochMilli(it.createdAt).atZone(zone).toLocalDate() }
+        val totalChars = entries.sumOf { it.content.count { ch -> !ch.isWhitespace() } }
+        val hourHistogram = entries.groupingBy { Instant.ofEpochMilli(it.createdAt).atZone(zone).hour }.eachCount()
+        return WritingStats(
+            totalEntries = entries.size,
+            totalChars = totalChars,
+            averageChars = if (entries.isEmpty()) 0 else totalChars / entries.size,
+            activeDays = byDay.size,
+            longestStreak = longestStreak(byDay.keys),
+            busiestHour = hourHistogram.maxByOrNull { it.value }?.key,
+            firstAt = entries.minOfOrNull { it.createdAt },
+        )
+    }
+
+    /** 最长连续写作天数。按自然日排序后扫一遍，跨天不连续就重新计数。 */
+    private fun longestStreak(days: Set<LocalDate>): Int {
+        if (days.isEmpty()) return 0
+        val sorted = days.sorted()
+        var best = 1
+        var run = 1
+        for (i in 1 until sorted.size) {
+            run = if (sorted[i - 1].plusDays(1) == sorted[i]) run + 1 else 1
+            if (run > best) best = run
+        }
+        return best
+    }
+
+    // ---------- 数据完整性 ----------
+
+    /**
+     * 自检结果。全部是「不该存在但可能因异常退出而残留」的状态。
+     * [orphanFiles] 是磁盘上没有被任何附件行引用的图片文件。
+     */
+    data class IntegrityReport(
+        val orphanFiles: Int = 0,
+        val danglingTodoSources: Int = 0,
+        val invalidCategories: Int = 0,
+        val trashedEntries: Int = 0,
+    ) {
+        val clean: Boolean get() = orphanFiles == 0 && danglingTodoSources == 0 && invalidCategories == 0
+    }
+
+    suspend fun integrityReport(): IntegrityReport {
+        val attachments = db.attachmentDao().allOnce()
+        val known = attachments.map { it.localPath }.toSet()
+        val orphanFiles = File(context.filesDir, "attachments").listFiles()
+            ?.count { it.isFile && it.absolutePath !in known } ?: 0
+        val entryIds = db.entryDao().allIncludingTrash().map { it.id }.toSet()
+        val dangling = db.todoDao().allOnce().count { it.sourceEntryId > 0 && it.sourceEntryId !in entryIds }
+        val invalid = db.entryDao().allIncludingTrash().count { it.categoryId !in Category.LIFE..Category.IDEA }
+        return IntegrityReport(
+            orphanFiles = orphanFiles,
+            danglingTodoSources = dangling,
+            invalidCategories = invalid,
+            trashedEntries = db.entryDao().trashOnce().size,
+        )
+    }
+
+    /**
+     * 修复自检发现的问题。
+     *
+     * 只做「去掉指向不存在的东西」这类无争议的清理，不猜测用户意图：
+     * 悬空来源链接摘掉（待办本身保留），非法分类归到默认值，孤儿图片删除。
+     */
+    suspend fun repairIntegrity(): String {
+        val before = integrityReport()
+        if (before.clean) return "没有发现需要修复的问题"
+
+        val entryIds = db.entryDao().allIncludingTrash().map { it.id }.toSet()
+        db.withTransaction {
+            db.todoDao().allOnce()
+                .filter { it.sourceEntryId > 0 && it.sourceEntryId !in entryIds }
+                .forEach { db.todoDao().update(it.copy(sourceEntryId = 0, updatedAt = System.currentTimeMillis())) }
+            db.entryDao().allIncludingTrash()
+                .filter { it.categoryId !in Category.LIFE..Category.IDEA }
+                .forEach { db.entryDao().update(it.copy(categoryId = Category.LIFE, updatedAt = System.currentTimeMillis())) }
+        }
+
+        val attachments = db.attachmentDao().allOnce()
+        val known = attachments.map { it.localPath }.toSet()
+        File(context.filesDir, "attachments").listFiles()
+            ?.filter { it.isFile && it.absolutePath !in known }
+            ?.forEach { it.delete() }
+
+        return buildString {
+            if (before.orphanFiles > 0) append("清理孤儿图片 ${before.orphanFiles} 个；")
+            if (before.danglingTodoSources > 0) append("修复悬空来源 ${before.danglingTodoSources} 条；")
+            if (before.invalidCategories > 0) append("归正分类 ${before.invalidCategories} 条；")
+            if (isEmpty()) append("已检查，没有需要修复的问题")
+        }.trimEnd('；')
+    }
+
+    // ---------- 双向链接 ----------
+
+    /** `[[标题]]` 里的标题；标题取正文首行的前若干字。 */
+    fun entryTitle(entry: EntryEntity): String = linkTitleOf(entry.content)
+
+    /** 解析一条正文里引用的其它条目（按标题匹配）。 */
+    suspend fun outgoingLinks(entry: EntryEntity): List<EntryEntity> {
+        val titles = LINK_RE.findAll(entry.content)
+            .map { it.groupValues[1].trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .take(MAX_LINKS)
+            .toList()
+        return titles.mapNotNull { db.entryDao().byTitle(it) }
+    }
+
+    /** 反链：其它条目里引用了当前条目的标题。 */
+    suspend fun backlinks(entry: EntryEntity): List<EntryEntity> =
+        db.entryDao().backlinks(linkTitleOf(entry.content), entry.id)
+
+    /** 按标题打开被链接的条目；找不到返回 null，由调用方提示。 */
+    suspend fun openLink(title: String): EntryEntity? = db.entryDao().byTitle(title.trim())
+
 
     suspend fun deleteAttachment(attachmentId: Long, entryId: Long): AttachmentEntity? {
         val attachment = db.attachmentDao().forEntry(entryId).firstOrNull { it.id == attachmentId } ?: return null
@@ -330,6 +591,34 @@ class JournalRepository(
     companion object {
         /** 删除后的撤销窗口。 */
         const val UNDO_WINDOW_MS = 8_000L
+
+        /** 回收站保留期：超过就彻底清理（含图片文件）。 */
+        const val TRASH_RETENTION_MS = 30L * 24 * 60 * 60 * 1000
+
+        /** 一条记忆最多解析多少条外链，避免异常正文拖慢详情页。 */
+        private const val MAX_LINKS = 20
+
+        /** 「往年今日」往回看几年。再往前记忆的密度已经很低，收益不大。 */
+        private const val ON_THIS_DAY_YEARS = 5
+
+        /** 标题最大长度：`[[链接]]` 太长时按前缀匹配没有意义。 */
+        private const val MAX_TITLE_CHARS = 40
+
+        /** `[[标题]]` 形式的双向链接。 */
+        private val LINK_RE = Regex("\\[\\[([^\\[\\]]{1,$MAX_TITLE_CHARS})]]")
+
+        /** 正文首行即标题；没有换行就整段截断。 */
+        fun linkTitleOf(content: String): String =
+            content.lineSequence().firstOrNull { it.isNotBlank() }?.trim()?.take(MAX_TITLE_CHARS).orEmpty()
+
+        /** 把标签列表序列化成 `tagsJson`。空列表写 `[]`，与既有数据保持一致。 */
+        fun tagsJsonOf(tags: List<String>): String = JSONArray(tags).toString()
+
+        /** 解析 `tagsJson`；脏数据一律当空列表，不让一条坏记录影响整页。 */
+        fun parseTags(raw: String): List<String> = runCatching {
+            val array = JSONArray(raw)
+            (0 until array.length()).mapNotNull { array.optString(it).takeIf { tag -> tag.isNotBlank() } }
+        }.getOrDefault(emptyList())
 
         /** 中日韩字符判定。含这类字符的查询必须走 LIKE 子串匹配，FTS 的按词索引匹配不到句中词。 */
         fun containsCjk(value: String): Boolean = value.any { char ->

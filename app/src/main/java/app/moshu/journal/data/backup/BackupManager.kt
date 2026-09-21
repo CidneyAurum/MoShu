@@ -34,7 +34,9 @@ object BackupManager {
     )
 
     suspend fun exportBackup(context: Context, db: AppDatabase, uri: Uri) = withContext(Dispatchers.IO) {
-        val entries = db.entryDao().allOnce()
+        // 完整备份连回收站一起带上：用户以为「备份 = 全部数据」，
+        // 少了回收站就会出现「备份了却恢复不出那条」的情况。可读 Markdown 导出则不含回收站。
+        val entries = db.entryDao().allIncludingTrash()
         val todos = db.todoDao().allOnce()
         val attachments = db.attachmentDao().allOnce()
         val reviews = db.aiReviewDao().allOnce()
@@ -223,6 +225,8 @@ object BackupManager {
         put("aiError", e.aiError)
         // 产出元数据的模型与提示词版本：不带上就没法在换设备后识别需要重做的条目。
         put("aiModel", e.aiModel); put("aiPromptVersion", e.aiPromptVersion)
+        // 回收站状态与收藏标记：不带这两项，换设备恢复后回收站里的条目会「复活」回列表。
+        put("deletedAt", e.deletedAt); put("isStarred", e.isStarred)
     }
 
     internal fun todoJson(t: TodoEntity, sourceUid: String?) = JSONObject().apply {
@@ -259,6 +263,9 @@ object BackupManager {
         // 旧备份没有这两个键，缺失时落到实体的默认值即可。
         aiModel = o.optString("aiModel"),
         aiPromptVersion = o.optInt("aiPromptVersion"),
+        // 同理：旧备份不带回收站与收藏，缺失时就是「不在回收站、未收藏」。
+        deletedAt = o.optLong("deletedAt", 0L),
+        isStarred = o.optBoolean("isStarred", false),
     )
 
     internal fun parseTodo(o: JSONObject, uid: String, sourceId: Long) = TodoEntity(

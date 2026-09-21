@@ -384,6 +384,35 @@ class SettingsViewModel : ViewModel() {
         }
     }
 
+    /**
+     * 数据完整性自检。
+     *
+     * 只在用户点的时候跑：全表扫描在个人日记量级很快，但没必要每次进设置都做。
+     */
+    fun checkIntegrity() {
+        viewModelScope.launch {
+            dataBusy.value = true
+            dataMessage.value = ""
+            try {
+                val report = app.journal.integrityReport()
+                dataMessage.value = if (report.clean) {
+                    "自检通过：没有孤儿图片、悬空来源或非法分类。"
+                } else {
+                    val parts = buildList {
+                        if (report.orphanFiles > 0) add("孤儿图片 ${report.orphanFiles} 个")
+                        if (report.danglingTodoSources > 0) add("悬空来源 ${report.danglingTodoSources} 条")
+                        if (report.invalidCategories > 0) add("非法分类 ${report.invalidCategories} 条")
+                    }
+                    "发现${parts.joinToString("、")}。可点「修复」清理。"
+                }
+            } catch (error: Exception) {
+                dataMessage.value = "自检失败：${error.message ?: "数据库不可读"}"
+            } finally { dataBusy.value = false }
+        }
+    }
+
+    fun repairIntegrity() = runDataTask("") { dataMessage.value = app.journal.repairIntegrity() }
+
     private fun runDataTask(success: String, block: suspend () -> Unit) {
         viewModelScope.launch {
             dataBusy.value = true

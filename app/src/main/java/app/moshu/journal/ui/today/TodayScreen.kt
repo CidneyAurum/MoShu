@@ -37,6 +37,9 @@ import androidx.compose.material.icons.rounded.EditNote
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Lightbulb
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.material3.FilterChip
+import app.moshu.journal.ui.components.ENTRY_TEMPLATES
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -83,9 +86,13 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import androidx.compose.ui.text.style.TextOverflow
+import app.moshu.journal.data.db.EntryEntity
 import java.time.Duration
+import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
@@ -183,6 +190,27 @@ fun TodayScreen(
                     initialDraft = initialDraft,
                     onDraftConsumed = onDraftConsumed,
                 )
+                // 模板放在输入框下方：先看到输入框，需要结构时再往下拿。
+                // 只在还没写内容时出现，避免误触覆盖已经写好的正文。
+                if (state.draft.isBlank()) {
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        item {
+                            Text(
+                                "模板",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 10.dp),
+                            )
+                        }
+                        items(ENTRY_TEMPLATES) { template ->
+                            FilterChip(
+                                selected = false,
+                                onClick = { viewModel.onDraftChange(template.body) },
+                                label = { Text(template.label) },
+                            )
+                        }
+                    }
+                }
                 if (state.message.isNotBlank()) {
                     Text(state.message, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error)
                 }
@@ -195,6 +223,18 @@ fun TodayScreen(
                     onMemory = onOpenMemory,
                     onActions = onOpenActions,
                 )
+            }
+        }
+        // 往年今日放在「今天的记忆」之前：这是回看类应用最容易被记住的功能，
+        // 藏在列表下面等于没有。没有往年记录时整块不出现，不占位置。
+        if (state.memories.isNotEmpty()) {
+            item {
+                Row(Modifier.padding(horizontal = 20.dp)) {
+                    MoShuSectionTitle("往年今日", action = "共 ${state.memories.size} 条")
+                }
+            }
+            items(state.memories.take(3), key = { "memory-${it.id}" }) { entry ->
+                MemoryCard(entry = entry, onClick = { onOpenEntry(entry.id) }, modifier = Modifier.padding(horizontal = 20.dp))
             }
         }
         item {
@@ -240,9 +280,49 @@ fun TodayScreen(
     }
 }
 
+/**
+ * 往年今日卡片。刻意做得比普通条目更淡、更短：它是回看用的线索，
+ * 不是今天要处理的内容，抢视觉焦点反而干扰记录。
+ */
 @Composable
-private fun CaptureComposer(
-    saving: Boolean,
+private fun MemoryCard(entry: EntryEntity, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val yearsAgo = remember(entry.createdAt) {
+        val then = Instant.ofEpochMilli(entry.createdAt).atZone(ZoneId.systemDefault()).toLocalDate()
+        (LocalDate.now().year - then.year).coerceAtLeast(1)
+    }
+    val dayFormat = remember { DateTimeFormatter.ofPattern("M月d日", Locale.CHINA) }
+    Card(
+        modifier = modifier.fillMaxWidth().clickable(onClick = onClick),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+    ) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "$yearsAgo 年前的今天",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    Instant.ofEpochMilli(entry.createdAt).atZone(ZoneId.systemDefault()).toLocalDate().format(dayFormat),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(
+                entry.summary.ifBlank { entry.content }.replace('\n', ' ').take(90),
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@Composable
+private fun CaptureComposer(    saving: Boolean,
     draft: String,
     onDraftChange: (String) -> Unit,
     onAdd: (String, List<Uri>, () -> Unit) -> Unit,

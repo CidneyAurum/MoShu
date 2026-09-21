@@ -70,6 +70,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.moshu.journal.data.db.AiReviewEntity
+import app.moshu.journal.data.WritingStats
 import app.moshu.journal.data.db.Category
 import app.moshu.journal.ui.components.MoShuConfirmDialog
 import app.moshu.journal.ui.components.MoShuEmptyState
@@ -90,10 +91,11 @@ fun InsightsScreen(
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val writingStats by viewModel.writingStats.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
     var confirmClearChat by remember { mutableStateOf(false) }
     // 消息项之前固定有 4 个卡片/标题，外加加载态与空状态两项可能占位。
-    val headerItems = 4 + (if (state.loading) 1 else 0) + (if (!state.loading && state.entryCount == 0) 1 else 0)
+    val headerItems = 4 + (if (state.loading) 1 else 0) + (if (!state.loading && state.entryCount == 0) 1 else 0) + (if (writingStats?.totalEntries == 0) 0 else 1)
     // 只在消息数增长时滚到最后一条；原先监听 asking 会在回答还没生成时就跳走。
     LaunchedEffect(state.messages.size) {
         val size = state.messages.size
@@ -152,6 +154,9 @@ fun InsightsScreen(
                         MoodChart(state.points)
                     }
                 }
+            }
+            item {
+                WritingStatsCard(writingStats)
             }
             item {
                 Card(shape = MaterialTheme.shapes.large, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
@@ -237,6 +242,38 @@ fun InsightsScreen(
 }
 
 @Composable private fun Stat(label: String, value: String) { Column(horizontalAlignment = Alignment.CenterHorizontally) { Text(value, style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.secondary); Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+
+/**
+ * 写作统计卡。全库口径，不随所看月份变化。
+ *
+ * 这些数字回答的是「我到底写了多少」——比月度图表更能支撑长期记录的动力。
+ */
+@Composable
+private fun WritingStatsCard(stats: WritingStats?) {
+    if (stats == null || stats.totalEntries == 0) return
+    Card(shape = MaterialTheme.shapes.large, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            MoShuSectionTitle("写作统计")
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
+                Stat("累计", "${stats.totalEntries}条")
+                Stat("字数", formatCount(stats.totalChars))
+                Stat("均长", "${stats.averageChars}字")
+                Stat("最长连续", "${stats.longestStreak}天")
+            }
+            stats.busiestHour?.let { hour ->
+                Text(
+                    "最常写字的时间：${hour.toString().padStart(2, '0')}:00 前后",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+/** 万字以上换算成「x.x万」，否则直接给数字。 */
+private fun formatCount(value: Int): String =
+    if (value >= 10_000) "%.1f万".format(Locale.CHINA, value / 10_000.0) else "$value"
 
 @Composable
 private fun ReviewCard(state: InsightsUiState, viewModel: InsightsViewModel, onSettings: () -> Unit) {

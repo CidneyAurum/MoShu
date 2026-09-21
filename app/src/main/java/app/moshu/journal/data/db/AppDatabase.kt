@@ -9,7 +9,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [EntryEntity::class, TodoEntity::class, AttachmentEntity::class, AiReviewEntity::class, EntryFtsEntity::class],
-    version = 4,
+    version = 5,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -76,8 +76,20 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v5：回收站与收藏。
+         *
+         * `deletedAt = 0` 表示正常条目，沿用旧行的默认值即可，无需回填。
+         */
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `entries` ADD COLUMN `deletedAt` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `entries` ADD COLUMN `isStarred` INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun build(context: Context): AppDatabase = Room.databaseBuilder(context, AppDatabase::class.java, "moshu.db")
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
             .build()
     }
 }

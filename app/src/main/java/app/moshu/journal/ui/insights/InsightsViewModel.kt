@@ -18,6 +18,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import app.moshu.journal.data.WritingStats
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -211,6 +212,15 @@ class InsightsViewModel : ViewModel() {
     }
 
     private val cachedReview = monthOffset.flatMapLatest { app.database.aiReviewDao().observe(periodKey(it)) }
+
+    /**
+     * 写作统计是「全库」口径，与正在看哪个月无关，所以不塞进下面那个大 combine。
+     * 挂在 [stats] 后面是为了跟着数据变化重算：那个流本来就订阅了库表。
+     */
+    val writingStats: StateFlow<WritingStats?> = stats
+        .map { app.journal.writingStats() }
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     val uiState: StateFlow<InsightsUiState> = combine(
         stats,

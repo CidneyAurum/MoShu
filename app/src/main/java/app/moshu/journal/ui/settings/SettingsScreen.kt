@@ -31,11 +31,13 @@ import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DarkMode
+import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.MenuBook
 import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.Palette
+import androidx.compose.material.icons.rounded.Sell
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Upload
 import androidx.compose.material.icons.rounded.Visibility
@@ -96,6 +98,8 @@ fun SettingsScreen(
     modifier: Modifier = Modifier,
     /** 重新查看使用引导。引导页本身是可返回的，不影响 onboardingDone。 */
     onOpenOnboarding: () -> Unit = {},
+    onOpenTags: () -> Unit = {},
+    onOpenTrash: () -> Unit = {},
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -369,6 +373,21 @@ fun SettingsScreen(
             }
         }
         item {
+            SettingsCard("整理", Icons.Rounded.Sell) {
+                Text(
+                    "标签由 AI 整理时补全。这里可以改名、合并同义标签，或把某个标签从所有记录上摘掉（不会删除记录）。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedButton(onClick = onOpenTags, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Rounded.Sell, null); Spacer(Modifier.size(8.dp)); Text("管理标签")
+                }
+                OutlinedButton(onClick = onOpenTrash, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Rounded.DeleteOutline, null); Spacer(Modifier.size(8.dp)); Text("回收站")
+                }
+            }
+        }
+        item {
             SettingsCard("数据", Icons.Rounded.Archive) {
                 Text("数据与图片保存在本机。完整备份不加密，也绝不包含 API Key。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 OutlinedButton(
@@ -389,6 +408,23 @@ fun SettingsScreen(
                 ) { Icon(Icons.Rounded.Upload, null); Spacer(Modifier.size(8.dp)); Text("恢复备份") }
                 if (state.dataBusy) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
                 if (state.dataMessage.isNotBlank()) Text(state.dataMessage, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedButton(
+                        onClick = viewModel::checkIntegrity,
+                        enabled = !state.dataBusy,
+                        modifier = Modifier.weight(1f),
+                    ) { Text("数据自检") }
+                    OutlinedButton(
+                        onClick = viewModel::repairIntegrity,
+                        enabled = !state.dataBusy,
+                        modifier = Modifier.weight(1f),
+                    ) { Text("修复") }
+                }
+                Text(
+                    "自检会检查孤儿图片、指向已删除记忆的行动、非法分类。修复只做无争议的清理，不会删除你的记录。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
         item {

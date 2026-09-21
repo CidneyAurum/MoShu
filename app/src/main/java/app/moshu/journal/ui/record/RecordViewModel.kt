@@ -34,10 +34,12 @@ data class MemoryFilters(
     val sort: EntrySort = EntrySort.NEWEST,
     /** 只看某一天；用来在长列表里快速定位，而不是靠滚动找。 */
     val day: LocalDate? = null,
+    /** 只看收藏。收藏与置顶不同：置顶改排序，收藏只是标记。 */
+    val starredOnly: Boolean = false,
 ) {
     /** 除排序外是否有筛选生效，决定「清除」按钮是否出现。 */
     val active: Boolean
-        get() = category != null || mood != null || pinnedOnly || failedOnly || query.isNotBlank() || day != null
+        get() = category != null || mood != null || pinnedOnly || failedOnly || query.isNotBlank() || day != null || starredOnly
 }
 
 data class RecordUiState(
@@ -75,6 +77,7 @@ class RecordViewModel : ViewModel() {
                     (filter.mood == null || entry.mood == filter.mood) &&
                     (!filter.pinnedOnly || entry.isPinned) &&
                     (!filter.failedOnly || entry.aiState == EntryAiState.FAILED.value) &&
+                    (!filter.starredOnly || entry.isStarred) &&
                     (filter.day == null || entryDay(entry) == filter.day)
             }
             RecordUiState(sortEntries(visible, filter.sort), attachments.groupBy { it.entryId }, filter, pending, loading.value)
@@ -106,6 +109,14 @@ class RecordViewModel : ViewModel() {
         filters.value = filters.value.copy(day = day)
     }
 
+    fun setStarredOnly(enabled: Boolean) {
+        filters.value = filters.value.copy(starredOnly = enabled)
+    }
+
+    fun toggleStarred(entry: EntryEntity) {
+        viewModelScope.launch { app.journal.toggleStarred(entry) }
+    }
+
     /** 一键清掉所有筛选（排序保留，它不算筛选）。 */
     fun clearFilters() {
         filters.value = MemoryFilters(sort = filters.value.sort)
@@ -118,6 +129,11 @@ class RecordViewModel : ViewModel() {
     fun toggleSearch() {
         val enabled = !filters.value.searchMode
         filters.value = filters.value.copy(searchMode = enabled, query = if (enabled) filters.value.query else "")
+    }
+
+    /** 直接进入搜索态（桌面快捷方式「搜一搜」用）。已在搜索态时不重复切换。 */
+    fun openSearch() {
+        if (!filters.value.searchMode) filters.value = filters.value.copy(searchMode = true)
     }
 
     fun togglePinned(entry: EntryEntity) {

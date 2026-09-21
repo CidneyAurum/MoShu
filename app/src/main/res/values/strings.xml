@@ -6,4 +6,9 @@
 -->
 <resources>
     <string name="app_name">墨枢</string>
+    <!-- 桌面长按快捷方式 -->
+    <string name="shortcut_compose">写一条</string>
+    <string name="shortcut_compose_long">写一条记忆</string>
+    <string name="shortcut_search">搜一搜</string>
+    <string name="shortcut_search_long">在记忆里搜索</string>
 </resources>

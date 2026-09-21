@@ -41,6 +41,8 @@ import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SearchOff
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.rounded.Star
+import androidx.compose.material.icons.rounded.StarBorder
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -282,6 +284,8 @@ data class EntryCardActions(
     val onEdit: () -> Unit,
     val onDuplicate: () -> Unit,
     val onTogglePin: () -> Unit,
+    /** 收藏。与置顶分开：收藏只是标记，不改变排序。 */
+    val onToggleStar: (() -> Unit)? = null,
     val onShare: () -> Unit,
     val onDelete: () -> Unit,
     /** 整理失败时的重试；非失败条目为 null。 */
@@ -298,6 +302,13 @@ private fun EntryCardMenu(expanded: Boolean, entry: EntryEntity, actions: EntryC
             leadingIcon = { Icon(Icons.Rounded.PushPin, null) },
             onClick = { onDismiss(); actions.onTogglePin() },
         )
+        actions.onToggleStar?.let { star ->
+            DropdownMenuItem(
+                text = { Text(if (entry.isStarred) "取消收藏" else "收藏") },
+                leadingIcon = { Icon(if (entry.isStarred) Icons.Rounded.StarBorder else Icons.Rounded.Star, null) },
+                onClick = { onDismiss(); star() },
+            )
+        }
         actions.onRetryAi?.let { retry ->
             DropdownMenuItem(text = { Text("重新整理") }, leadingIcon = { Icon(Icons.Rounded.Refresh, null) }, onClick = { onDismiss(); retry() })
         }

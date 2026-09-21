@@ -66,11 +66,15 @@ import app.moshu.journal.ui.record.MemoryScreen
 import app.moshu.journal.ui.record.RecordViewModel
 import app.moshu.journal.ui.settings.SettingsScreen
 import app.moshu.journal.ui.settings.SettingsViewModel
+import app.moshu.journal.ui.tags.TagsScreen
+import app.moshu.journal.ui.tags.TagsViewModel
 import app.moshu.journal.ui.theme.MoShuTheme
 import app.moshu.journal.ui.today.TodayScreen
 import app.moshu.journal.ui.today.TodayViewModel
 import app.moshu.journal.ui.todo.TodosScreen
 import app.moshu.journal.ui.todo.TodosViewModel
+import app.moshu.journal.ui.trash.TrashScreen
+import app.moshu.journal.ui.trash.TrashViewModel
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
@@ -84,6 +88,8 @@ class MainActivity : ComponentActivity() {
     private val todayRequest = mutableIntStateOf(0)
     /** AI 整理失败通知请求跳到「记忆」页失败筛选的令牌。 */
     private val failedRequest = mutableIntStateOf(0)
+    /** 桌面快捷方式「搜一搜」请求直接打开搜索框的令牌。 */
+    private val searchRequest = mutableIntStateOf(0)
 
     /**
      * 从外部分享进来的文字（ACTION_SEND / PROCESS_TEXT）。
@@ -100,6 +106,10 @@ class MainActivity : ComponentActivity() {
         }
         if (savedInstanceState == null && intent.getBooleanExtra(EXTRA_OPEN_AI_FAILURES, false)) {
             failedRequest.intValue = 1
+        }
+        // 快捷方式「搜一搜」：直接落到搜索态，而不是先到列表再让用户点放大镜。
+        if (savedInstanceState == null && wantsSearch(intent)) {
+            searchRequest.intValue = 1
         }
         if (savedInstanceState == null) consumeSharedText(intent)
         enableEdgeToEdge()
@@ -137,6 +147,7 @@ class MainActivity : ComponentActivity() {
                             openSettingsToken = settingsRequest.intValue,
                             todayToken = todayRequest.intValue,
                             failedToken = failedRequest.intValue,
+                            searchToken = searchRequest.intValue,
                             sharedDraft = sharedDraft.value,
                             onDraftConsumed = { sharedDraft.value = "" },
                         )
@@ -164,8 +175,14 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         if (intent.getBooleanExtra(EXTRA_OPEN_ACTIONS, false)) actionsRequest.intValue += 1
         if (intent.getBooleanExtra(EXTRA_OPEN_AI_FAILURES, false)) failedRequest.intValue += 1
+        if (wantsSearch(intent)) searchRequest.intValue += 1
         consumeSharedText(intent)
     }
+
+    /** 桌面快捷方式「搜一搜」有两种到达方式：布尔 extra（通知/内部）或 `moshu://search`（快捷方式）。 */
+    private fun wantsSearch(intent: Intent): Boolean =
+        intent.getBooleanExtra(EXTRA_OPEN_SEARCH, false) ||
+            (intent.data?.scheme == "moshu" && intent.data?.host == "search")
 
     /**
      * 处理 ACTION_SEND / ACTION_PROCESS_TEXT。
@@ -186,6 +203,7 @@ class MainActivity : ComponentActivity() {
 
     /** 通知与外部 Intent 使用的 extra 名。通知构造方引用同一常量，避免字符串拼写漂移。 */
     companion object {
+        const val EXTRA_OPEN_SEARCH = "app.moshu.journal.OPEN_SEARCH"
         const val EXTRA_OPEN_ACTIONS = "open_actions"
         const val EXTRA_OPEN_AI_FAILURES = "open_ai_failures"
     }
@@ -198,6 +216,8 @@ private object Routes {
     const val REVIEW = "review"
     const val SETTINGS = "settings"
     const val ONBOARDING = "onboarding"
+    const val TAGS = "tags"
+    const val TRASH = "trash"
     const val ENTRY = "entry/{entryId}"
     fun entry(id: Long) = "entry/$id"
 }
@@ -217,6 +237,7 @@ private fun MoShuRoot(
     openSettingsToken: Int = 0,
     todayToken: Int = 0,
     failedToken: Int = 0,
+    searchToken: Int = 0,
     sharedDraft: String = "",
     onDraftConsumed: () -> Unit = {},
 ) {
@@ -264,7 +285,7 @@ private fun MoShuRoot(
         if (useRail) {
             Row(Modifier.fillMaxSize()) {
                 if (topLevel) NavigationItems(currentRoute, activeTodos, vertical = true) { navigateTop(navController, it) }
-                AppNavHost(navController, Modifier.weight(1f), actionsToken, failedToken, sharedDraft, onDraftConsumed)
+                AppNavHost(navController, Modifier.weight(1f), actionsToken, failedToken, searchToken, sharedDraft, onDraftConsumed)
             }
         } else {
             Scaffold(
@@ -272,7 +293,7 @@ private fun MoShuRoot(
                 bottomBar = {
                     if (topLevel) NavigationItems(currentRoute, activeTodos, vertical = false) { navigateTop(navController, it) }
                 },
-            ) { padding -> AppNavHost(navController, Modifier.padding(padding), actionsToken, failedToken, sharedDraft, onDraftConsumed) }
+            ) { padding -> AppNavHost(navController, Modifier.padding(padding), actionsToken, failedToken, searchToken, sharedDraft, onDraftConsumed) }
         }
         // 底栏之上留出空间，避免 snackbar 压住导航项。
         SnackbarHost(snackbar, modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = if (useRail) 16.dp else 88.dp))
@@ -321,6 +342,7 @@ private fun AppNavHost(
     modifier: Modifier,
     actionsToken: Int,
     failedToken: Int = 0,
+    searchToken: Int = 0,
     sharedDraft: String = "",
     onDraftConsumed: () -> Unit = {},
 ) {
@@ -345,6 +367,8 @@ private fun AppNavHost(
                 val memoryViewModel = viewModel<RecordViewModel>()
                 // 失败通知 deep link：进入时默认打开「整理失败」筛选。
                 LaunchedEffect(failedToken) { if (failedToken > 0) memoryViewModel.setFailedOnly(true) }
+                // 快捷方式「搜一搜」：进入记忆页即展开搜索框。
+                LaunchedEffect(searchToken) { if (searchToken > 0) memoryViewModel.openSearch() }
                 MemoryScreen(
                     viewModel = memoryViewModel,
                     onOpenEntry = { navController.navigate(Routes.entry(it)) },
@@ -371,6 +395,8 @@ private fun AppNavHost(
                     onBack = { navController.popBackStack() },
                     // 引导页可以随时重看，返回即回到设置，不会重置 onboardingDone。
                     onOpenOnboarding = { navController.navigate(Routes.ONBOARDING) },
+                    onOpenTags = { navController.navigate(Routes.TAGS) },
+                    onOpenTrash = { navController.navigate(Routes.TRASH) },
                 )
             }
             composable(Routes.ONBOARDING) {
@@ -381,6 +407,12 @@ private fun AppNavHost(
                         navController.navigate(Routes.SETTINGS)
                     },
                 )
+            }
+            composable(Routes.TAGS) {
+                TagsScreen(viewModel<TagsViewModel>(), onBack = { navController.popBackStack() })
+            }
+            composable(Routes.TRASH) {
+                TrashScreen(viewModel<TrashViewModel>(), onBack = { navController.popBackStack() })
             }
             composable(
                 route = Routes.ENTRY,

@@ -38,6 +38,12 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -61,6 +67,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withLink
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -69,6 +82,8 @@ import app.moshu.journal.ai.AiConfig
 import app.moshu.journal.data.db.AttachmentEntity
 import app.moshu.journal.data.db.Category
 import app.moshu.journal.data.db.EntryAiState
+import androidx.compose.material3.Surface
+import app.moshu.journal.data.db.EntryEntity
 import app.moshu.journal.data.media.ImageStorage
 import app.moshu.journal.ui.components.AiActions
 import app.moshu.journal.ui.components.EntryImageStrip
@@ -88,6 +103,8 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.rounded.Star
+import androidx.compose.material.icons.rounded.StarBorder
 import androidx.compose.material.icons.rounded.StarOutline
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -95,6 +112,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import app.moshu.journal.ai.Hosts
 import app.moshu.journal.ui.components.MessageSeverity
 import app.moshu.journal.ui.components.MoShuMessageBar
+import app.moshu.journal.ui.components.MoShuSectionTitle
 import app.moshu.journal.ui.components.rememberCopyText
 import app.moshu.journal.ui.components.THUMBNAIL_TARGET_PX
 import app.moshu.journal.ui.components.shareEntry
@@ -106,6 +124,8 @@ fun EntryDetailScreen(
     viewModel: EntryDetailViewModel,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    /** 点开 `[[链接]]` 或反链时跳到那条记忆；由导航层提供。 */
+    onOpenLink: (Long) -> Unit = {},
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val entry = state.entry
@@ -120,6 +140,37 @@ fun EntryDetailScreen(
     var confirmDelete by remember { mutableStateOf(false) }
     var selectedImage by remember { mutableStateOf<AttachmentEntity?>(null) }
     var todoDraft by remember { mutableStateOf("") }
+    /** 正文字号档位。长文阅读时最常调的一项。 */
+    var fontStep by remember(entry?.id) { mutableStateOf(1) }
+    val bodyFontSize = FONT_STEPS[fontStep].first
+    val links by viewModel.links.collectAsStateWithLifecycle()
+    val backlinks by viewModel.backlinks.collectAsStateWithLifecycle()
+    var moreMenu by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    // 单条导出成 .md：整库导出解决的是备份，这里解决的是「把这一条发给别人 / 存进笔记库」。
+    val exportMarkdown = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/markdown")) { uri ->
+        val current = entry
+        if (uri != null && current != null) {
+            scope.launch {
+                val ok = runCatching {
+                    withContext(Dispatchers.IO) {
+                        context.contentResolver.openOutputStream(uri, "wt")?.use { out ->
+                            out.write(entryMarkdown(current).toByteArray(Charsets.UTF_8))
+                        } ?: error("无法写入所选文件")
+                    }
+                }.isSuccess
+                MoShuApp.instance.notices.post(if (ok) "已导出为 Markdown" else "导出失败，请换个位置再试")
+            }
+        }
+    }
+
+    // 链接与反链只在进入页面（或正文变化）时查一次，不必跟着每次重组查库。
+    LaunchedEffect(entry?.id, entry?.content) {
+        if (entry != null) {
+            viewModel.outgoingLinks()
+            viewModel.loadBacklinks()
+        }
+    }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(ImageStorage.MAX_ATTACHMENTS)) {
         viewModel.addImages(it)
     }
@@ -166,11 +217,34 @@ fun EntryDetailScreen(
             onBack = { if (editing && editorDirty) confirmDiscard = true else onBack() },
             actions = {
                 if (!editing) {
-                    IconButton(onClick = { shareEntry(context, entry) }) { Icon(Icons.Rounded.Share, "分享") }
-                    IconButton(onClick = viewModel::togglePinned) {
-                        Icon(Icons.Rounded.PushPin, "置顶", tint = if (entry.isPinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                    IconButton(onClick = viewModel::toggleStarred) {
+                        Icon(
+                            if (entry.isStarred) Icons.Rounded.Star else Icons.Rounded.StarBorder,
+                            if (entry.isStarred) "取消收藏" else "收藏",
+                            tint = if (entry.isStarred) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                     IconButton(onClick = { editing = true }) { Icon(Icons.Rounded.Edit, "编辑") }
+                    Box {
+                        IconButton(onClick = { moreMenu = true }) { Icon(Icons.Rounded.MoreVert, "更多操作") }
+                        DropdownMenu(expanded = moreMenu, onDismissRequest = { moreMenu = false }) {
+                            DropdownMenuItem(
+                                text = { Text("分享") },
+                                leadingIcon = { Icon(Icons.Rounded.Share, null) },
+                                onClick = { moreMenu = false; shareEntry(context, entry) },
+                            )
+                            DropdownMenuItem(
+                                text = { Text(if (entry.isPinned) "取消置顶" else "置顶") },
+                                leadingIcon = { Icon(Icons.Rounded.PushPin, null) },
+                                onClick = { moreMenu = false; viewModel.togglePinned() },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("导出为 Markdown") },
+                                leadingIcon = { Icon(Icons.Rounded.Download, null) },
+                                onClick = { moreMenu = false; exportMarkdown.launch("${entryTitleForFile(entry)}.md") },
+                            )
+                        }
+                    }
                 }
             },
         )
@@ -213,10 +287,14 @@ fun EntryDetailScreen(
                         val clipboard = rememberCopyText()
                         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             // 正文可选中复制：以前只有回顾页能选中，详情页只能整条分享。
+                            // `[[标题]]` 渲染成可点链接，点了跳到那条记忆。
+                            val linked = remember(entry.id, entry.content) {
+                                linkify(entry.content) { title -> viewModel.openLink(title, onOpenLink) }
+                            }
                             SelectionContainer {
                                 Text(
-                                    entry.content,
-                                    style = MaterialTheme.typography.bodyLarge,
+                                    linked,
+                                    style = MaterialTheme.typography.bodyLarge.copy(fontSize = bodyFontSize),
                                     maxLines = if (expanded || !long) Int.MAX_VALUE else COLLAPSED_LINES,
                                     overflow = TextOverflow.Ellipsis,
                                 )
@@ -226,6 +304,28 @@ fun EntryDetailScreen(
                                     TextButton(onClick = { expanded = !expanded }) { Text(if (expanded) "收起" else "展开全文") }
                                 }
                                 TextButton(onClick = { clipboard(entry.content) }) { Text("复制全文") }
+                                // 长文阅读时字号不够用；三档足够，做滑杆反而难对准。
+                                TextButton(onClick = { fontStep = (fontStep + 1) % FONT_STEPS.size }) {
+                                    Text("字号 ${FONT_STEPS[fontStep].second}")
+                                }
+                            }
+                        }
+                    }
+                }
+                if (links.isNotEmpty() || backlinks.isNotEmpty()) {
+                    item {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            if (links.isNotEmpty()) {
+                                MoShuSectionTitle("引用了")
+                                links.forEach { target ->
+                                    LinkRow(target, onClick = { onOpenLink(target.id) })
+                                }
+                            }
+                            if (backlinks.isNotEmpty()) {
+                                MoShuSectionTitle("被引用")
+                                backlinks.forEach { source ->
+                                    LinkRow(source, onClick = { onOpenLink(source.id) })
+                                }
                             }
                         }
                     }
@@ -590,6 +690,87 @@ private fun InfoPill(text: String) {
 }
 
 private fun splitTags(raw: String): List<String> = raw.split(',', '，', '#').map { it.trim() }.filter { it.isNotBlank() }.distinct().take(6)
+
+/** 正文字号三档。做滑杆反而难对准，档位制在手机上更好用。 */
+private val FONT_STEPS = listOf(15.sp to "小", 17.sp to "标准", 20.sp to "大")
+
+/** 导出文件名：用正文首行当标题，去掉不能出现在文件名里的字符。 */
+private fun entryTitleForFile(entry: EntryEntity): String {
+    val raw = entry.summary.ifBlank { entry.content }.lineSequence().firstOrNull { it.isNotBlank() }.orEmpty()
+    val cleaned = raw.replace(Regex("[\\\\/:*?\"<>|\\n\\r]"), " ").trim().take(30)
+    return cleaned.ifBlank { "记忆-${SimpleDateFormat("yyyyMMdd-HHmm", Locale.CHINA).format(Date(entry.createdAt))}" }
+}
+
+/** 单条 Markdown：概括 + 正文 + 元信息。不含任何密钥或服务地址。 */
+private fun entryMarkdown(entry: EntryEntity): String = buildString {
+    appendLine("# ${entryTitleForFile(entry)}")
+    appendLine()
+    appendLine("- 时间：${SimpleDateFormat("yyyy年M月d日 HH:mm", Locale.CHINA).format(Date(entry.createdAt))}")
+    appendLine("- 分类：${Category.NAMES.getOrElse(entry.categoryId) { "未分类" }}")
+    if (entry.mood.isNotBlank()) appendLine("- 情绪：${moodLabel(entry.mood)}")
+    val tags = splitTags(entry.tagsJson)
+    if (tags.isNotEmpty()) appendLine("- 标签：${tags.joinToString(" ") { "#$it" }}")
+    if (entry.summary.isNotBlank()) {
+        appendLine()
+        appendLine("> ${entry.summary}")
+    }
+    appendLine()
+    appendLine(entry.content)
+}
+
+/** `[[标题]]` 匹配。与仓库层保持同一形态，但这里只负责渲染。 */
+private val INLINE_LINK_RE = Regex("\\[\\[([^\\[\\]]{1,40})]]")
+
+/**
+ * 把正文里的 `[[标题]]` 变成可点链接。
+ *
+ * 找不到同名条目时链接仍然可点，点击后由 ViewModel 给出「没有找到」的提示——
+ * 静默失效会让人以为是应用坏了。
+ */
+private fun linkify(content: String, onOpen: (String) -> Unit): AnnotatedString = buildAnnotatedString {
+    var cursor = 0
+    INLINE_LINK_RE.findAll(content).forEach { match ->
+        append(content.substring(cursor, match.range.first))
+        val title = match.groupValues[1].trim()
+        withLink(
+            LinkAnnotation.Clickable(
+                tag = title,
+                styles = TextLinkStyles(
+                    style = SpanStyle(
+                        color = Color(0xFF4055B8),
+                        textDecoration = TextDecoration.Underline,
+                    ),
+                ),
+                linkInteractionListener = { onOpen(title) },
+            ),
+        ) { append(title) }
+        cursor = match.range.last + 1
+    }
+    if (cursor < content.length) append(content.substring(cursor))
+}
+
+@Composable
+private fun LinkRow(entry: EntryEntity, onClick: () -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surfaceVariant,
+    ) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                entry.summary.ifBlank { entry.content }.replace('\n', ' ').take(60),
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                SimpleDateFormat("yyyy年M月d日", Locale.CHINA).format(Date(entry.createdAt)),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
 
 /** 展示用服务商主机名；没写协议的地址也尽量解析。 */
 private fun providerHost(url: String): String = Hosts.of(url).ifBlank { "你配置的服务商" }
