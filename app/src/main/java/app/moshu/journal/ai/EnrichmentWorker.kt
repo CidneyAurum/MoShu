@@ -16,6 +16,9 @@ import app.moshu.journal.data.db.EntryAiState
 import app.moshu.journal.data.db.ManualMetadata
 import app.moshu.journal.data.db.TodoEntity
 import app.moshu.journal.data.media.ImageStorage
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
@@ -25,6 +28,26 @@ class EnrichmentWorker(context: Context, params: WorkerParameters) : CoroutineWo
     override suspend fun doWork(): Result {
         val entryId = inputData.getLong(KEY_ENTRY_ID, 0)
         if (entryId <= 0) return Result.failure()
+        return try {
+            runEnrichment(entryId)
+        } catch (cancel: CancellationException) {
+            // 任务被取消（例如编辑后用 REPLACE 顶掉旧任务）时把 running 退回 pending，
+            // 否则条目会永远显示「整理中」。CoroutineWorker.onStopped 是 final 的，
+            // 只能在取消路径上自己收尾。
+            withContext(NonCancellable) { resetIfRunning(entryId) }
+            throw cancel
+        }
+    }
+
+    private suspend fun resetIfRunning(entryId: Long) {
+        val dao = (applicationContext as MoShuApp).database.entryDao()
+        val entry = dao.byId(entryId) ?: return
+        if (entry.aiState == EntryAiState.RUNNING.value) {
+            dao.updateAiState(entryId, EntryAiState.PENDING.value)
+        }
+    }
+
+    private suspend fun runEnrichment(entryId: Long): Result {
         val app = applicationContext as MoShuApp
         val dao = app.database.entryDao()
         val entry = dao.byId(entryId) ?: return Result.success()

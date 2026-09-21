@@ -92,9 +92,12 @@ object Notifications {
 
     fun showTodo(context: Context, todo: TodoEntity) {
         ensureChannel(context)
+        // 通知 id 与 PendingIntent 的 requestCode 用同一个值。原先 id 取模 10000，
+        // 会让相差 10000 的两条待办共用同一个通知槽，后到的会顶掉先到的。
+        val notificationId = 20_000 + todo.id.toInt()
         val pending = PendingIntent.getActivity(
             context,
-            todo.id.toInt(),
+            notificationId,
             Intent(context, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
                 putExtra("open_actions", true)
@@ -110,6 +113,6 @@ object Notifications {
             .setAutoCancel(true)
             .build()
         val manager = context.getSystemService(NotificationManager::class.java) ?: return
-        manager.notify(20_000 + (todo.id % 10_000).toInt(), notification)
+        manager.notify(notificationId, notification)
     }
 }

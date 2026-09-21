@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -19,6 +20,7 @@ import androidx.compose.material.icons.rounded.EditNote
 import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SearchOff
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -28,6 +30,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -36,8 +39,9 @@ import app.moshu.journal.data.db.Category
 import app.moshu.journal.ui.components.EntryCard
 import app.moshu.journal.ui.components.MoShuEmptyState
 import app.moshu.journal.ui.components.MoShuPageHeader
-import java.text.SimpleDateFormat
-import java.util.Date
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 @Composable
@@ -68,6 +72,13 @@ fun MemoryScreen(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
                 placeholder = { Text("搜索内容、标签或概括") },
                 leadingIcon = { Icon(Icons.Rounded.Search, null) },
+                trailingIcon = {
+                    if (state.filters.query.isNotBlank()) {
+                        IconButton(onClick = { viewModel.setQuery("") }) {
+                            Icon(Icons.Rounded.Close, contentDescription = "清空搜索")
+                        }
+                    }
+                },
                 singleLine = true,
                 shape = MaterialTheme.shapes.large,
             )
@@ -88,12 +99,22 @@ fun MemoryScreen(
                     leadingIcon = { Icon(Icons.Rounded.PushPin, null) },
                 )
             }
-            item { FilterChip(state.filters.mood == "great", { viewModel.setMood(if (state.filters.mood == "great") null else "great") }, { Text("✨") }) }
-            item { FilterChip(state.filters.mood == "good", { viewModel.setMood(if (state.filters.mood == "good") null else "good") }, { Text("🙂") }) }
-            item { FilterChip(state.filters.mood == "low", { viewModel.setMood(if (state.filters.mood == "low") null else "low") }, { Text("😕") }) }
+            // 五种情绪都要能筛：原先只有三个纯 emoji 的块，neutral/bad 的条目永远筛不出来，
+            // 而且 TalkBack 只会读出一个孤零零的「✨」。
+            items(MOOD_FILTERS) { (value, label) ->
+                FilterChip(
+                    selected = state.filters.mood == value,
+                    onClick = { viewModel.setMood(if (state.filters.mood == value) null else value) },
+                    label = { Text(label) },
+                )
+            }
         }
 
-        if (state.entries.isEmpty()) {
+        if (state.loading) {
+            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+            }
+        } else if (state.entries.isEmpty()) {
             Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
                 MoShuEmptyState(
                     if (state.filters.query.isBlank()) "还没有这类记忆" else "没有找到相关记忆",
@@ -102,22 +123,26 @@ fun MemoryScreen(
                 )
             }
         } else {
+            // 分组与格式化器必须放在 LazyColumn 内容 lambda 之外：
+            // 那个 lambda 每次重组（含每一帧滚动）都会重新执行。
+            val dayFormatter = remember { DateTimeFormatter.ofPattern("M月d日 EEEE", Locale.CHINA) }
+            val grouped = remember(state.entries) {
+                state.entries.groupBy { Instant.ofEpochMilli(it.createdAt).atZone(ZoneId.systemDefault()).toLocalDate() }
+            }
             LazyColumn(
                 modifier = Modifier.weight(1f),
                 contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 28.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                val formatter = SimpleDateFormat("M月d日 EEEE", Locale.CHINA)
-                val grouped = state.entries.groupBy { formatter.format(Date(it.createdAt)) }
-                grouped.forEach { (day, entries) ->
+                grouped.forEach { (day, dayEntries) ->
                     item(key = "day-$day") {
                         Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text(day, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(day.format(dayFormatter), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Spacer(Modifier.weight(1f))
-                            Text("${entries.size} 条", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("${dayEntries.size} 条", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
-                    items(entries, key = { it.id }) { entry ->
+                    items(dayEntries, key = { it.id }) { entry ->
                         EntryCard(entry = entry, onClick = { onOpenEntry(entry.id) }, attachments = state.attachments[entry.id].orEmpty())
                     }
                 }
@@ -125,3 +150,12 @@ fun MemoryScreen(
         }
     }
 }
+
+/** 情绪筛选块：值与文案必须与详情页编辑器的选项一致，覆盖全部五种情绪。 */
+private val MOOD_FILTERS = listOf(
+    "great" to "✨ 很好",
+    "good" to "🙂 不错",
+    "neutral" to "😌 平静",
+    "low" to "😕 低落",
+    "bad" to "😞 难过",
+)

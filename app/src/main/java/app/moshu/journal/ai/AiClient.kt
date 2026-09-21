@@ -48,11 +48,19 @@ object AiClient {
                 }
             }
 
+            // 不用 setFixedLengthStreamingMode：流式模式下 HttpURLConnection 无法在
+            // 401 之后透明重发请求，会改抛 HttpRetryException，用户就看不到
+            // 「HTTP 401：<服务端原因>」这种可排查的提示了。
             connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
 
             val code = connection.responseCode
             val stream = if (code in 200..299) connection.inputStream else connection.errorStream
-            val raw = BufferedReader(InputStreamReader(stream!!, Charsets.UTF_8)).use { it.readText() }
+            // 204/304 之类可能既没有 body 也没有 errorStream，此时 stream 为 null。
+            // 直接 !! 会抛 NPE，用户看到的是「网络错误」这种毫无线索的提示。
+            if (stream == null) {
+                return@withContext Result.Fail("服务返回了空响应（HTTP $code）", retryable = true)
+            }
+            val raw = BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { it.readText() }
 
             if (code !in 200..299) {
                 return@withContext Result.Fail(

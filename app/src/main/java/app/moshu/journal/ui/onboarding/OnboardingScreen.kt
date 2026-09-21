@@ -24,8 +24,10 @@ import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -77,9 +79,18 @@ fun OnboardingScreen(onComplete: () -> Unit, modifier: Modifier = Modifier) {
             pages.indices.forEach { index -> Box(Modifier.size(if (index == page) 22.dp else 7.dp, 7.dp).background(if (index == page) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline, CircleShape)) }
         }
         Spacer(Modifier.size(24.dp))
-        Button(
-            onClick = { if (page < pages.lastIndex) page++ else onComplete() },
-            modifier = Modifier.fillMaxWidth(),
-        ) { Text(if (page == pages.lastIndex) "开始记录" else "继续", modifier = Modifier.padding(vertical = 6.dp)) }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+            if (page > 0) {
+                OutlinedButton(onClick = { page-- }, modifier = Modifier.weight(1f)) {
+                    Text("上一步", modifier = Modifier.padding(vertical = 6.dp))
+                }
+            }
+            Button(
+                onClick = { if (page < pages.lastIndex) page++ else onComplete() },
+                modifier = Modifier.weight(1f),
+            ) { Text(if (page == pages.lastIndex) "开始记录" else "继续", modifier = Modifier.padding(vertical = 6.dp)) }
+        }
+        // 三步都是说明性的，不该强制用户翻完才能进应用。
+        TextButton(onClick = onComplete, modifier = Modifier.fillMaxWidth()) { Text("跳过") }
     }
 }

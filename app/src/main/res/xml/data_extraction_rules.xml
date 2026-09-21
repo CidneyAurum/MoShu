@@ -1,9 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <data-extraction-rules>
+    <!-- 墨枢的数据是私人的，不参与云备份，也不参与换机迁移。
+         只排除 root 是不够的：数据库、附件和 DataStore 分别位于
+         database / file / sharedpref 域，必须逐域排除，否则一旦
+         allowBackup 被改动或换机流程绕过它，整本日记和照片都会被带出去。 -->
     <cloud-backup disableIfNoEncryptionCapabilities="true">
         <exclude domain="root" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
     </cloud-backup>
     <device-transfer>
         <exclude domain="root" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
     </device-transfer>
 </data-extraction-rules>

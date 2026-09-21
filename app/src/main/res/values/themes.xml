@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.MoShu" parent="android:Theme.Material.NoActionBar">
+    <!-- 用 Light 变体作父主题：应用默认是浅色的（window_bg 为宣纸白），
+         而 android:Theme.Material 是深色主题，会让平台绘制的界面元素
+         （窗口底色、自动填充弹窗、对话框边框）在浅色模式下按深色假设渲染。
+         深色模式由 Compose 的 MoShuTheme 处理，系统栏图标外观在 MainActivity 里同步。 -->
+    <style name="Theme.MoShu" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:windowBackground">@color/window_bg</item>
         <item name="android:statusBarColor">@color/window_bg</item>
         <item name="android:navigationBarColor">@color/window_bg</item>

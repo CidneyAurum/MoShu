@@ -79,15 +79,28 @@ object ImageStorage {
 
     suspend fun toAiInput(attachment: AttachmentEntity): AiClient.ImageInput? = withContext(Dispatchers.IO) {
         runCatching {
-            val source = BitmapFactory.decodeFile(attachment.localPath) ?: return@runCatching null
-            val resized = resize(source, MAX_AI_EDGE)
-            val bytes = ByteArrayOutputStream().use { out ->
-                resized.compress(Bitmap.CompressFormat.JPEG, 82, out)
-                out.toByteArray()
+            // 先读尺寸再按目标边长下采样：原图可达 2560px（ARGB_8888 约 26MB），
+            // 多张图片在同一个 worker 里顺序解码会把低内存设备直接打爆。
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(attachment.localPath, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@runCatching null
+            var sample = 1
+            while (max(bounds.outWidth / (sample * 2), bounds.outHeight / (sample * 2)) >= MAX_AI_EDGE) sample *= 2
+            val source = BitmapFactory.decodeFile(
+                attachment.localPath,
+                BitmapFactory.Options().apply { inSampleSize = sample },
+            ) ?: return@runCatching null
+            try {
+                val resized = resize(source, MAX_AI_EDGE)
+                val bytes = ByteArrayOutputStream().use { out ->
+                    resized.compress(Bitmap.CompressFormat.JPEG, 82, out)
+                    out.toByteArray()
+                }
+                if (resized !== source) resized.recycle()
+                AiClient.ImageInput("image/jpeg", Base64.encodeToString(bytes, Base64.NO_WRAP))
+            } finally {
+                if (!source.isRecycled) source.recycle()
             }
-            if (source !== resized) source.recycle()
-            resized.recycle()
-            AiClient.ImageInput("image/jpeg", Base64.encodeToString(bytes, Base64.NO_WRAP))
         }.getOrNull()
     }
 
@@ -115,6 +128,16 @@ object ImageStorage {
                 ExifInterface.ORIENTATION_ROTATE_270 -> postRotate(270f)
                 ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> postScale(-1f, 1f)
                 ExifInterface.ORIENTATION_FLIP_VERTICAL -> postScale(1f, -1f)
+                // 5/7 是「转置」与「反转置」：旋转与镜像的组合。漏掉它们会让部分前置摄像头
+                // 和扫描件的照片永久躺倒——重编码后的 JPEG 不再带 EXIF，之后无法补救。
+                ExifInterface.ORIENTATION_TRANSPOSE -> {
+                    postRotate(90f)
+                    postScale(-1f, 1f)
+                }
+                ExifInterface.ORIENTATION_TRANSVERSE -> {
+                    postRotate(270f)
+                    postScale(-1f, 1f)
+                }
                 else -> return source
             }
         }

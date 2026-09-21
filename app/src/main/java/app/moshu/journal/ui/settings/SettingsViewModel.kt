@@ -26,6 +26,8 @@ data class SettingsUiState(
     val authPrefix: String = "Bearer ",
     val exactEndpoint: Boolean = false,
     val hasStoredKey: Boolean = false,
+    /** 密文在但解不开：需要提示用户重新填写密钥，而不是显示成「尚未配置」。 */
+    val keyUnreadable: Boolean = false,
     val saving: Boolean = false,
     val testing: Boolean = false,
     val message: String = "",
@@ -60,6 +62,8 @@ class SettingsViewModel : ViewModel() {
         val exactEndpoint: Boolean = false,
         val hasStoredKey: Boolean = false,
         val loaded: Boolean = false,
+        /** 用户是否已经改过任何字段：改过之后就不再被 DataStore 的首次发射覆盖。 */
+        val touched: Boolean = false,
     )
 
     private data class Core(val draft: Draft, val saving: Boolean, val testing: Boolean, val message: Pair<String, Boolean>)
@@ -72,7 +76,7 @@ class SettingsViewModel : ViewModel() {
     }
     private val dataState = combine(dataBusy, dataMessage) { busy, note -> DataState(busy, note) }
 
-    val uiState: StateFlow<SettingsUiState> = combine(core, peripheral, dataState) { c, p, data ->
+    val uiState: StateFlow<SettingsUiState> = combine(core, peripheral, dataState, settings.keyUnreadable) { c, p, data, unreadable ->
         SettingsUiState(
             baseUrl = c.draft.baseUrl,
             model = c.draft.model,
@@ -83,6 +87,7 @@ class SettingsViewModel : ViewModel() {
             authPrefix = c.draft.authPrefix,
             exactEndpoint = c.draft.exactEndpoint,
             hasStoredKey = c.draft.hasStoredKey,
+            keyUnreadable = unreadable,
             saving = c.saving,
             testing = c.testing,
             message = c.message.first,
@@ -100,7 +105,10 @@ class SettingsViewModel : ViewModel() {
     init {
         viewModelScope.launch {
             settings.aiConfig.collect { config ->
-                if (!draft.value.loaded) {
+                // 只在用户还没动过任何字段时回填。曾经的判断是 !loaded，而每个
+                // onXxxChange 都用 copy 保留了 loaded=false，于是刚打开页面就输入的内容
+                // 会被第一次 DataStore 发射覆盖掉。
+                if (!draft.value.touched) {
                     draft.value = Draft(
                         baseUrl = config.baseUrl,
                         model = config.model,
@@ -111,21 +119,22 @@ class SettingsViewModel : ViewModel() {
                         exactEndpoint = config.exactEndpoint,
                         hasStoredKey = config.apiKey.isNotBlank(),
                         loaded = true,
+                        touched = false,
                     )
                 }
             }
         }
     }
 
-    fun applyTemplate(template: AiConfig.Template) { draft.value = draft.value.copy(baseUrl = template.url, model = template.model, exactEndpoint = false) }
-    fun onBaseUrlChange(value: String) { draft.value = draft.value.copy(baseUrl = value) }
-    fun onModelChange(value: String) { draft.value = draft.value.copy(model = value) }
-    fun onVisionModelChange(value: String) { draft.value = draft.value.copy(visionModel = value) }
-    fun onAllowImagesChange(value: Boolean) { draft.value = draft.value.copy(allowImageAnalysis = value) }
-    fun onApiKeyChange(value: String) { draft.value = draft.value.copy(apiKey = value.trim()) }
-    fun onAuthHeaderChange(value: String) { draft.value = draft.value.copy(authHeaderName = value.trim()) }
-    fun onAuthPrefixChange(value: String) { draft.value = draft.value.copy(authPrefix = value) }
-    fun onExactEndpointChange(value: Boolean) { draft.value = draft.value.copy(exactEndpoint = value) }
+    fun applyTemplate(template: AiConfig.Template) { draft.value = draft.value.copy(baseUrl = template.url, model = template.model, exactEndpoint = false, touched = true) }
+    fun onBaseUrlChange(value: String) { draft.value = draft.value.copy(baseUrl = value, touched = true) }
+    fun onModelChange(value: String) { draft.value = draft.value.copy(model = value, touched = true) }
+    fun onVisionModelChange(value: String) { draft.value = draft.value.copy(visionModel = value, touched = true) }
+    fun onAllowImagesChange(value: Boolean) { draft.value = draft.value.copy(allowImageAnalysis = value, touched = true) }
+    fun onApiKeyChange(value: String) { draft.value = draft.value.copy(apiKey = value.trim(), touched = true) }
+    fun onAuthHeaderChange(value: String) { draft.value = draft.value.copy(authHeaderName = value.trim(), touched = true) }
+    fun onAuthPrefixChange(value: String) { draft.value = draft.value.copy(authPrefix = value.trim(), touched = true) }
+    fun onExactEndpointChange(value: Boolean) { draft.value = draft.value.copy(exactEndpoint = value, touched = true) }
 
     fun save() {
         val d = draft.value
@@ -135,9 +144,18 @@ class SettingsViewModel : ViewModel() {
             saving.value = true
             try {
                 val key = d.apiKey.ifBlank { settings.currentAiConfig().apiKey }
+                // 密钥为空就明确要求填写：原来会照样报「已保存」，之后每次调用都只得到
+                // 一个鉴权错误，用户完全看不出根因（换锁屏或恢复备份后尤其常见）。
+                if (key.isBlank()) {
+                    setMessage("请填写 API Key 后再保存", false)
+                    return@launch
+                }
                 settings.saveAi(d.baseUrl, d.model, key, d.authHeaderName, d.authPrefix, d.visionModel, d.allowImageAnalysis, d.exactEndpoint)
-                draft.value = d.copy(apiKey = "", hasStoredKey = key.isNotBlank(), loaded = true)
+                draft.value = d.copy(apiKey = "", hasStoredKey = true, loaded = true, touched = false)
                 setMessage("配置已安全保存在本机", true)
+            } catch (error: Exception) {
+                // KeyVault 加密或 DataStore 写入失败会抛异常，不接住就会终止进程。
+                setMessage("保存失败：${error.message ?: "请稍后重试"}", false)
             } finally { saving.value = false }
         }
     }
@@ -176,7 +194,11 @@ class SettingsViewModel : ViewModel() {
     fun restore(uri: Uri, replace: Boolean) = runDataTask("") {
         val result = BackupManager.restore(app, app.database, uri, replace)
         app.database.todoDao().allOnce().filter { !it.done && it.reminderAt != null }.forEach { TodoReminderWorker.schedule(app, it) }
-        dataMessage.value = "恢复完成：${result.entries} 条记忆、${result.todos} 个行动、${result.images} 张图片"
+        dataMessage.value = buildString {
+            append("恢复完成：${result.entries} 条记忆、${result.todos} 个行动、${result.images} 张图片")
+            // 有图片没能恢复时必须说清楚，否则用户会以为照片都回来了。
+            if (result.skippedImages > 0) append("；另有 ${result.skippedImages} 张图片在备份中缺失，未能恢复")
+        }
     }
 
     private fun runDataTask(success: String, block: suspend () -> Unit) {

@@ -8,18 +8,22 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.rounded.AddPhotoAlternate
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
@@ -30,6 +34,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -39,7 +45,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -51,6 +56,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -64,9 +70,12 @@ import app.moshu.journal.ui.components.LocalImage
 import app.moshu.journal.ui.components.MoShuPageHeader
 import app.moshu.journal.ui.components.parseTags
 import java.text.SimpleDateFormat
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
 import java.util.Date
 import java.util.Locale
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun EntryDetailScreen(
     viewModel: EntryDetailViewModel,
@@ -78,12 +87,35 @@ fun EntryDetailScreen(
     var editing by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
     var selectedImage by remember { mutableStateOf<AttachmentEntity?>(null) }
+    var todoDraft by remember { mutableStateOf("") }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(ImageStorage.MAX_ATTACHMENTS)) {
         viewModel.addImages(it)
     }
 
     if (entry == null) {
-        Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("这条记忆已经不存在") }
+        Column(modifier.fillMaxSize()) {
+            MoShuPageHeader(title = "记忆详情", onBack = onBack)
+            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                // 首次查询还没回来时不能断言「已删除」——那只是初始状态。
+                if (state.loading) {
+                    CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+                } else {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.padding(horizontal = 32.dp),
+                    ) {
+                        Text("这条记忆已经不存在", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "它可能已在其他页面被删除。返回后可以继续浏览其它记忆。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                        )
+                    }
+                }
+            }
+        }
         return
     }
 
@@ -119,7 +151,8 @@ fun EntryDetailScreen(
                 if (entry.summary.isNotBlank()) item { Text(entry.summary, style = MaterialTheme.typography.headlineMedium) }
                 if (entry.content.isNotBlank()) item { Text(entry.content, style = MaterialTheme.typography.bodyLarge) }
                 item {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // 标签是用户/AI 生成的，长度不可控，普通 Row 会静默裁掉尾部。
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         InfoPill(Category.nameOf(entry.categoryId))
                         entry.mood.takeIf { it.isNotBlank() }?.let { InfoPill(moodLabel(it)) }
                         parseTags(entry.tagsJson).take(4).forEach { InfoPill("#$it") }
@@ -141,6 +174,56 @@ fun EntryDetailScreen(
                     }
                 }
                 item {
+                    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, null, tint = MaterialTheme.colorScheme.secondary)
+                                Spacer(Modifier.size(8.dp))
+                                Text("关联行动", style = MaterialTheme.typography.titleMedium)
+                                Spacer(Modifier.weight(1f))
+                                if (state.todos.isNotEmpty()) {
+                                    Text("${state.todos.count { !it.done }}/${state.todos.size} 进行中", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                            state.todos.forEach { todo ->
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                                    Checkbox(checked = todo.done, onCheckedChange = { viewModel.toggleTodo(todo) })
+                                    Text(
+                                        todo.text,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = if (todo.done) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                                        textDecoration = if (todo.done) TextDecoration.LineThrough else null,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    todo.dueEpochDay?.let { due ->
+                                        Text(
+                                            LocalDate.ofEpochDay(due.toLong()).format(DateTimeFormatter.ofPattern("M月d日")),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = if (!todo.done && due < LocalDate.now().toEpochDay().toInt()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                OutlinedTextField(
+                                    value = todoDraft,
+                                    onValueChange = { todoDraft = it },
+                                    modifier = Modifier.weight(1f),
+                                    placeholder = { Text("把这条记忆变成下一步…") },
+                                    singleLine = true,
+                                    shape = MaterialTheme.shapes.medium,
+                                )
+                                IconButton(
+                                    onClick = { viewModel.addTodo(todoDraft); todoDraft = "" },
+                                    enabled = todoDraft.isNotBlank(),
+                                ) {
+                                    Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, "添加行动", tint = MaterialTheme.colorScheme.primary)
+                                }
+                            }
+                        }
+                    }
+                }
+                item {
                     OutlinedButton(onClick = { confirmDelete = true }, modifier = Modifier.fillMaxWidth()) {
                         Icon(Icons.Rounded.DeleteOutline, null, tint = MaterialTheme.colorScheme.error)
                         Spacer(Modifier.size(8.dp))
@@ -153,9 +236,18 @@ fun EntryDetailScreen(
     }
 
     selectedImage?.let { image ->
+        val index = state.attachments.indexOfFirst { it.id == image.id }
         Dialog(onDismissRequest = { selectedImage = null }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
             Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
                 LocalImage(image.localPath, Modifier.fillMaxSize(), ContentScale.Fit)
+                if (index >= 0 && state.attachments.size > 1) {
+                    Text(
+                        "${index + 1} / ${state.attachments.size}",
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelLarge,
+                        modifier = Modifier.align(Alignment.TopStart).padding(24.dp).background(Color.Black.copy(alpha = 0.5f), CircleShape).padding(horizontal = 12.dp, vertical = 6.dp),
+                    )
+                }
                 IconButton(onClick = { selectedImage = null }, modifier = Modifier.align(Alignment.TopEnd).padding(20.dp).background(Color.Black.copy(alpha = 0.5f), CircleShape)) {
                     Icon(Icons.Rounded.Close, "关闭", tint = Color.White)
                 }
@@ -174,6 +266,7 @@ fun EntryDetailScreen(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun EntryEditor(
     entry: app.moshu.journal.data.db.EntryEntity,
@@ -189,6 +282,7 @@ private fun EntryEditor(
     var tags by remember(entry.id) { mutableStateOf(parseTags(entry.tagsJson).joinToString("，")) }
     var category by remember(entry.id) { mutableIntStateOf(entry.categoryId) }
     var mood by remember(entry.id) { mutableStateOf(entry.mood) }
+    var pendingImageDelete by remember(entry.id) { mutableStateOf<Long?>(null) }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -198,12 +292,13 @@ private fun EntryEditor(
         item { OutlinedTextField(content, { content = it }, Modifier.fillMaxWidth(), label = { Text("正文") }, minLines = 6, shape = MaterialTheme.shapes.large) }
         item { OutlinedTextField(summary, { summary = it.take(60) }, Modifier.fillMaxWidth(), label = { Text("一句话概括") }, shape = MaterialTheme.shapes.medium) }
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Category.NAMES.forEachIndexed { index, label -> FilterChip(category == index, { category = index }, { Text(label) }) }
             }
         }
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+            // 五个带文字的 FilterChip 在 360dp 宽的机器上放不下一行，末位会被裁掉且点不到。
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 listOf("great" to "✨ 很好", "good" to "🙂 不错", "neutral" to "😌 平静", "low" to "😕 低落", "bad" to "😞 难过").forEach { (value, label) ->
                     FilterChip(mood == value, { mood = value }, { Text(label) })
                 }
@@ -212,11 +307,26 @@ private fun EntryEditor(
         item { OutlinedTextField(tags, { tags = it }, Modifier.fillMaxWidth(), label = { Text("标签，用逗号分隔") }, shape = MaterialTheme.shapes.medium) }
         if (attachments.isNotEmpty()) {
             item {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    attachments.take(4).forEach { image ->
+                // 用可横向滚动的列表而不是 Row(take(4))：上限是 9 张，
+                // 取前 4 张会让剩下的图片在编辑态里既看不到也删不掉。
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(attachments, key = { it.id }) { image ->
                         Box(Modifier.size(68.dp).clip(RoundedCornerShape(12.dp))) {
                             LocalImage(image.localPath, Modifier.fillMaxSize())
-                            Icon(Icons.Rounded.Close, "删除图片", Modifier.align(Alignment.TopEnd).size(22.dp).background(MaterialTheme.colorScheme.surface.copy(alpha = 0.85f), CircleShape).clickable { onDeleteImage(image.id) }.padding(3.dp))
+                            // 触控区至少 48dp：原来只有 22dp，既难点中又容易误触，
+                            // 而且删图片会立刻删磁盘文件，所以补一层确认。
+                            Box(
+                                modifier = Modifier.align(Alignment.TopEnd).size(48.dp)
+                                    .clickable(onClickLabel = "删除这张图片") { pendingImageDelete = image.id },
+                                contentAlignment = Alignment.TopEnd,
+                            ) {
+                                Box(
+                                    modifier = Modifier.size(24.dp).background(MaterialTheme.colorScheme.surface.copy(alpha = 0.85f), CircleShape),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Icon(Icons.Rounded.Close, "删除图片", Modifier.size(16.dp))
+                                }
+                            }
                         }
                     }
                 }
@@ -239,6 +349,18 @@ private fun EntryEditor(
                 ) { Text("保存") }
             }
         }
+    }
+
+    pendingImageDelete?.let { imageId ->
+        AlertDialog(
+            onDismissRequest = { pendingImageDelete = null },
+            title = { Text("删除这张图片？") },
+            text = { Text("图片会从本机移除，无法恢复。") },
+            confirmButton = {
+                Button(onClick = { onDeleteImage(imageId); pendingImageDelete = null }) { Text("删除") }
+            },
+            dismissButton = { TextButton(onClick = { pendingImageDelete = null }) { Text("取消") } },
+        )
     }
 }
 

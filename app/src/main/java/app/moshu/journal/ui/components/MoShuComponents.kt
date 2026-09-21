@@ -1,6 +1,7 @@
 package app.moshu.journal.ui.components
 
 import android.graphics.BitmapFactory
+import android.util.LruCache
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -34,6 +36,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -43,6 +46,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -72,10 +76,10 @@ fun MoShuPageHeader(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (onBack != null) {
-            IconButton(onClick = onBack, modifier = Modifier.size(44.dp)) {
+            IconButton(onClick = onBack, modifier = Modifier.size(48.dp)) {
                 Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "返回")
             }
-            Spacer(Modifier.width(4.dp))
+            Spacer(Modifier.width(2.dp))
         }
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.headlineLarge)
@@ -87,7 +91,7 @@ fun MoShuPageHeader(
         if (onSettings != null) {
             IconButton(
                 onClick = onSettings,
-                modifier = Modifier.size(44.dp).background(MaterialTheme.colorScheme.surface, CircleShape),
+                modifier = Modifier.size(48.dp).background(MaterialTheme.colorScheme.surface, CircleShape),
             ) {
                 Icon(Icons.Rounded.Settings, contentDescription = "设置", modifier = Modifier.size(21.dp))
             }
@@ -100,12 +104,10 @@ fun MoShuSectionTitle(title: String, action: String? = null, onAction: (() -> Un
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(title, style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
         if (action != null && onAction != null) {
-            Text(
-                action,
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.clickable(onClick = onAction).padding(8.dp),
-            )
+            // 用 TextButton 而不是裸 Text + clickable：后者只有约 36dp，够不到 48dp 的最小触控区。
+            TextButton(onClick = onAction, modifier = Modifier.heightIn(min = 48.dp)) {
+                Text(action, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+            }
         }
     }
 }
@@ -120,7 +122,8 @@ fun MoShuEmptyState(
     Column(
         modifier = modifier.fillMaxWidth().padding(32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+        // 垂直居中，让各页的空状态位置一致（原先在「行动」页顶对齐、在「记忆」页居中）。
+        verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterVertically),
     ) {
         Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.size(58.dp)) {
             Box(contentAlignment = Alignment.Center) {
@@ -175,7 +178,8 @@ fun EntryCard(
             }
             if (attachments.isNotEmpty()) EntryImageStrip(attachments.take(3))
             val tags = parseTags(entry.tagsJson)
-            if (tags.isNotEmpty() || entry.aiState != EntryAiState.SUCCEEDED.value) {
+            val mood = moodEmoji(entry.mood)
+            if (tags.isNotEmpty() || mood.isNotEmpty() || entry.aiState != EntryAiState.SUCCEEDED.value) {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                     tags.take(3).forEach { tag ->
                         Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
@@ -184,7 +188,7 @@ fun EntryCard(
                     }
                     Spacer(Modifier.weight(1f))
                     AiStateLabel(entry.aiState)
-                    moodEmoji(entry.mood).takeIf { it.isNotEmpty() }?.let { Text(it) }
+                    if (mood.isNotEmpty()) Text(mood)
                 }
             }
         }
@@ -198,26 +202,60 @@ fun EntryImageStrip(
     onClick: ((AttachmentEntity) -> Unit)? = null,
 ) {
     val shape = RoundedCornerShape(12.dp)
+    val shown = attachments.take(3)
+    val extra = attachments.size - shown.size
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = modifier.fillMaxWidth()) {
-        attachments.forEach { attachment ->
+        shown.forEachIndexed { index, attachment ->
             Box(
                 modifier = Modifier.weight(1f).aspectRatio(1.35f).clip(shape)
                     .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .then(if (onClick != null) Modifier.clickable { onClick(attachment) } else Modifier),
+                    .then(if (onClick != null) Modifier.clickable(onClickLabel = "查看大图") { onClick(attachment) } else Modifier),
                 contentAlignment = Alignment.Center,
             ) {
-                LocalImage(attachment.localPath, Modifier.matchParentSize())
+                LocalImage(
+                    attachment.localPath,
+                    Modifier.matchParentSize(),
+                    contentDescription = "记忆图片 ${index + 1}，共 ${attachments.size} 张",
+                )
+                // 多于三张时给出提示，否则 6 张的条目看起来和 3 张的一模一样。
+                if (extra > 0 && index == shown.lastIndex) {
+                    Box(
+                        Modifier.matchParentSize().background(Color.Black.copy(alpha = 0.45f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("+$extra", color = Color.White, style = MaterialTheme.typography.titleMedium)
+                    }
+                }
             }
         }
-        repeat((3 - attachments.size).coerceAtLeast(0)) { Spacer(Modifier.weight(1f)) }
+        repeat((3 - shown.size).coerceAtLeast(0)) { Spacer(Modifier.weight(1f)) }
     }
 }
 
+/**
+ * 进程级缩略图缓存。此前缓存的生存期只有一次组合，滚动列表或返回页面都会
+ * 重新从磁盘解码同一张图。
+ *
+ * 上限按字节而不是条数：单张 720px 缩略图可达约 2MB，按 24 条算是近 50MB，
+ * 在内存本来就紧张的机器上反而成了压力来源。
+ */
+private val imageCache = object : LruCache<String, ImageBitmap>(
+    (Runtime.getRuntime().maxMemory() / 8).coerceAtMost(24L * 1024 * 1024).toInt(),
+) {
+    override fun sizeOf(key: String, value: ImageBitmap): Int = value.width * value.height * 4
+}
+
 @Composable
-fun LocalImage(path: String, modifier: Modifier = Modifier, contentScale: ContentScale = ContentScale.Crop) {
-    var bitmap by remember(path) { mutableStateOf<ImageBitmap?>(null) }
+fun LocalImage(
+    path: String,
+    modifier: Modifier = Modifier,
+    contentScale: ContentScale = ContentScale.Crop,
+    contentDescription: String? = null,
+) {
+    var bitmap by remember(path) { mutableStateOf(imageCache.get(path)) }
     LaunchedEffect(path) {
-        bitmap = withContext(Dispatchers.IO) {
+        if (bitmap != null) return@LaunchedEffect
+        val loaded = withContext(Dispatchers.IO) {
             runCatching {
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeFile(path, bounds)
@@ -228,9 +266,12 @@ fun LocalImage(path: String, modifier: Modifier = Modifier, contentScale: Conten
                 BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })?.asImageBitmap()
             }.getOrNull()
         }
+        if (loaded != null) imageCache.put(path, loaded)
+        bitmap = loaded
     }
-    if (bitmap != null) {
-        Image(bitmap = bitmap!!, contentDescription = null, modifier = modifier, contentScale = contentScale)
+    val current = bitmap
+    if (current != null) {
+        Image(bitmap = current, contentDescription = contentDescription, modifier = modifier, contentScale = contentScale)
     } else {
         Box(modifier.background(MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) {
             Icon(Icons.Rounded.Image, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)

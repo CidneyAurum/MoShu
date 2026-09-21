@@ -17,11 +17,11 @@ object AskEngine {
         val role: String, // "user" | "assistant"
         val text: String,
         val sourceEntryIds: List<Long> = emptyList(),
+        /** 列表身份标识。同一句话可以问两次，因此不能用文本做 key。 */
+        val id: Long = 0L,
     ) {
         val sourceCount: Int get() = sourceEntryIds.size
     }
-
-    data class AskAnswer(val text: String, val sourceEntryIds: List<Long>)
 
     val SYSTEM_PROMPT = """
 你是「墨枢」，用户的私人日记助手。仅依据给出的日记摘录回答用户的问题；摘录不足以回答时请直说不知道。
@@ -49,7 +49,8 @@ object AskEngine {
 
         for (keyword in extractKeywords(question)) {
             if (result.size >= 40) break
-            addAll(dao.searchOnce(keyword, 20))
+            // 关键词会直接拼进 LIKE 模式串，通配符必须转义。
+            addAll(dao.searchOnce(escapeLikePattern(keyword), 20))
         }
         // 近两周条目永远参与，保证"最近在忙什么"这类泛问也能答
         addAll(dao.since(now - 14L * 24 * 60 * 60 * 1000).take(30))
@@ -64,15 +65,9 @@ object AskEngine {
         return "【日记摘录】\n$body"
     }
 
-    suspend fun ask(
-        config: AiConfig,
-        dao: EntryDao,
-        question: String,
-        now: Long,
-    ): Pair<AiClient.Result, Int> {
-        val excerpts = retrieve(dao, question, now)
-        val userPrompt = buildUserPrompt(excerpts) + "\n\n【问题】$question"
-        val result = AiClient.complete(config, SYSTEM_PROMPT, userPrompt, temperature = 0.5)
-        return result to excerpts.size
-    }
+    /** 与 EntryDao 的 LIKE ... ESCAPE '!' 配套：转义通配符，否则关键词里的 % 会匹配全部。 */
+    private fun escapeLikePattern(value: String): String = value
+        .replace("!", "!!")
+        .replace("%", "!%")
+        .replace("_", "!_")
 }

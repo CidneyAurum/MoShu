@@ -5,11 +5,13 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoStories
@@ -18,6 +20,7 @@ import androidx.compose.material.icons.rounded.Insights
 import androidx.compose.material.icons.rounded.WbSunny
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -28,13 +31,15 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
@@ -63,11 +68,17 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
-    private val openActions = mutableStateOf(false)
+    /** 递增的请求令牌：从待办通知进来时 +1，用令牌而不是布尔值做 key，
+     *  这样连续点第二条通知也能重新导航（布尔值第二次不会变化，看起来像没反应）。 */
+    private val actionsRequest = mutableIntStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        openActions.value = intent.getBooleanExtra("open_actions", false)
+        // 只在首次创建时消费这个 extra。旋转屏幕/换主题会用同一个 Intent 重建 Activity，
+        // 每次都读会把用户从当前页面拽回「行动」。
+        if (savedInstanceState == null && intent.getBooleanExtra(EXTRA_OPEN_ACTIONS, false)) {
+            actionsRequest.intValue = 1
+        }
         enableEdgeToEdge()
         setContent {
             val app = MoShuApp.instance
@@ -76,12 +87,29 @@ class MainActivity : ComponentActivity() {
             }
             val startup by startupFlow.collectAsStateWithLifecycle(initialValue = null)
             val scope = rememberCoroutineScope()
-            MoShuTheme(startup?.first ?: "system") {
+            val themeMode = startup?.first ?: "system"
+            val dark = when (themeMode) {
+                "dark" -> true
+                "light" -> false
+                else -> isSystemInDarkTheme()
+            }
+            // 系统栏图标必须跟随应用内主题，而不是系统主题：强制深色时若图标仍是深色，
+            // 在深色背景上就完全看不见了。
+            SideEffect {
+                WindowCompat.getInsetsController(window, window.decorView).apply {
+                    isAppearanceLightStatusBars = !dark
+                    isAppearanceLightNavigationBars = !dark
+                }
+            }
+            MoShuTheme(themeMode) {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    if (startup?.second == true) {
-                        MoShuRoot(startAtActions = openActions.value)
-                    } else if (startup != null) {
-                        OnboardingScreen(onComplete = { scope.launch { app.settings.completeOnboarding() } })
+                    when {
+                        startup?.second == true -> MoShuRoot(actionsToken = actionsRequest.intValue)
+                        startup != null -> OnboardingScreen(onComplete = { scope.launch { app.settings.completeOnboarding() } })
+                        // 读取 DataStore 期间给一个明确的加载态，而不是一片空白。
+                        else -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                        }
                     }
                 }
             }
@@ -90,7 +118,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        if (intent.getBooleanExtra("open_actions", false)) openActions.value = true
+        setIntent(intent)
+        if (intent.getBooleanExtra(EXTRA_OPEN_ACTIONS, false)) actionsRequest.intValue += 1
+    }
+
+    private companion object {
+        const val EXTRA_OPEN_ACTIONS = "open_actions"
     }
 }
 
@@ -114,15 +147,18 @@ private val destinations = listOf(
 )
 
 @Composable
-private fun MoShuRoot(startAtActions: Boolean) {
+private fun MoShuRoot(actionsToken: Int) {
     val navController = rememberNavController()
     val backStack by navController.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route
-    val activeTodos by MoShuApp.instance.database.todoDao().observeActiveCount().collectAsStateWithLifecycle(0)
+    // 必须在 remember 里创建：collectAsStateWithLifecycle 以 Flow 实例为 key，
+    // 每次重组都新建 Flow 会重新订阅并重跑 COUNT 查询（角标还会瞬间归零）。
+    val todoCountFlow = remember { MoShuApp.instance.database.todoDao().observeActiveCount() }
+    val activeTodos by todoCountFlow.collectAsStateWithLifecycle(0)
     val topLevel = destinations.any { it.route == currentRoute }
 
-    androidx.compose.runtime.LaunchedEffect(startAtActions) {
-        if (startAtActions) navigateTop(navController, Routes.ACTIONS)
+    androidx.compose.runtime.LaunchedEffect(actionsToken) {
+        if (actionsToken > 0) navigateTop(navController, Routes.ACTIONS)
     }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -130,7 +166,7 @@ private fun MoShuRoot(startAtActions: Boolean) {
         if (useRail) {
             Row(Modifier.fillMaxSize()) {
                 if (topLevel) NavigationItems(currentRoute, activeTodos, vertical = true) { navigateTop(navController, it) }
-                AppNavHost(navController, Modifier.weight(1f), startAtActions)
+                AppNavHost(navController, Modifier.weight(1f), actionsToken)
             }
         } else {
             Scaffold(
@@ -138,7 +174,7 @@ private fun MoShuRoot(startAtActions: Boolean) {
                 bottomBar = {
                     if (topLevel) NavigationItems(currentRoute, activeTodos, vertical = false) { navigateTop(navController, it) }
                 },
-            ) { padding -> AppNavHost(navController, Modifier.padding(padding), startAtActions) }
+            ) { padding -> AppNavHost(navController, Modifier.padding(padding), actionsToken) }
         }
     }
 }
@@ -180,11 +216,11 @@ private fun DestinationIcon(destination: Destination, activeTodos: Int) {
 }
 
 @Composable
-private fun AppNavHost(navController: androidx.navigation.NavHostController, modifier: Modifier, startAtActions: Boolean) {
+private fun AppNavHost(navController: androidx.navigation.NavHostController, modifier: Modifier, actionsToken: Int) {
     Box(modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
         NavHost(
             navController = navController,
-            startDestination = if (startAtActions) Routes.ACTIONS else Routes.TODAY,
+            startDestination = if (actionsToken > 0) Routes.ACTIONS else Routes.TODAY,
             modifier = Modifier.fillMaxSize().widthIn(max = 960.dp),
         ) {
             composable(Routes.TODAY) {

@@ -44,8 +44,13 @@ object Enricher {
             }
             val tags = buildList {
                 val arr = obj.optJSONArray("tags") ?: JSONArray()
-                for (i in 0 until arr.length()) add(arr.getString(i))
-            }.filter { it.isNotBlank() }.take(6)
+                for (i in 0 until arr.length()) {
+                    // 用 optString 逐个取值：模型偶尔会把数字或 null 混进数组，
+                    // 用 getString 会抛异常，导致整条整理结果（含概括、情绪、行动项）全丢。
+                    val tag = arr.optString(i, "").trim()
+                    if (tag.isNotEmpty()) add(tag)
+                }
+            }.take(6)
 
             val todos = buildList {
                 val arr = obj.optJSONArray("todos") ?: JSONArray()
@@ -60,13 +65,24 @@ object Enricher {
                 categoryId = category,
                 tags = tags,
                 summary = obj.optString("summary").take(60),
-                mood = obj.optString("mood").take(10),
+                mood = normalizeMood(obj.optString("mood")),
                 todos = todos,
             )
         }
     } catch (_: Exception) {
         null
     }
+
+    /**
+     * 只接受已知情绪值。模型偶尔会返回 happy / sad 这类同义写法，
+     * 直接落库会让条目在回顾页没有表情、也不计入平均心情——属于静默的数据损坏。
+     */
+    fun normalizeMood(raw: String): String {
+        val value = raw.trim().lowercase()
+        return if (value in MOODS) value else "neutral"
+    }
+
+    private val MOODS = setOf("great", "good", "neutral", "low", "bad")
 
     suspend fun enrich(
         config: AiConfig,

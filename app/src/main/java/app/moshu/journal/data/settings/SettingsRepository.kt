@@ -37,19 +37,28 @@ class SettingsRepository(context: Context) {
         val ONBOARDING_DONE = booleanPreferencesKey("onboarding_done")
     }
 
-    val aiConfig: Flow<AiConfig> = appContext.dataStore.data.map { prefs ->
+    private val storedConfig: Flow<Pair<AiConfig, Boolean>> = appContext.dataStore.data.map { prefs ->
         val encrypted = prefs[Keys.API_KEY_ENC].orEmpty()
+        val decrypted = if (encrypted.isBlank()) null else runCatching { KeyVault.decrypt(encrypted) }.getOrNull()
         AiConfig(
             baseUrl = prefs[Keys.BASE_URL].orEmpty(),
             model = prefs[Keys.MODEL].orEmpty(),
             visionModel = prefs[Keys.VISION_MODEL].orEmpty(),
             allowImageAnalysis = prefs[Keys.ALLOW_IMAGE_AI] ?: false,
-            apiKey = if (encrypted.isBlank()) "" else runCatching { KeyVault.decrypt(encrypted) }.getOrDefault(""),
+            apiKey = decrypted.orEmpty(),
             authHeaderName = prefs[Keys.AUTH_HEADER] ?: "Authorization",
             authPrefix = prefs[Keys.AUTH_PREFIX] ?: "Bearer ",
             exactEndpoint = prefs[Keys.EXACT_ENDPOINT] ?: false,
-        )
+        ) to (encrypted.isNotBlank() && decrypted == null)
     }
+
+    val aiConfig: Flow<AiConfig> = storedConfig.map { it.first }
+
+    /**
+     * 密文在、但解不开：换了锁屏方式、清了 Keystore 或从备份恢复都会这样。
+     * 这时不能只显示「尚未配置」，否则用户完全不知道密钥为什么失效了。
+     */
+    val keyUnreadable: Flow<Boolean> = storedConfig.map { it.second }
 
     /**
      * 实际生效的 AI 配置：用户显式保存的优先；

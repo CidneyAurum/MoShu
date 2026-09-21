@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -64,6 +65,7 @@ import app.moshu.journal.BuildConfig
 import app.moshu.journal.reminder.Notifications
 import app.moshu.journal.reminder.ReminderScheduler
 import app.moshu.journal.ui.components.MoShuPageHeader
+import java.util.Locale
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 
@@ -129,7 +131,10 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit, modifier: M
             SettingsCard("AI 服务", Icons.Rounded.AutoAwesome) {
                 Text("墨枢直连你选择的 OpenAI 兼容接口，支持服务商基础地址与完整请求端点。密钥只加密保存在本机。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(state.templates) { template -> FilterChip(false, { viewModel.applyTemplate(template) }, { Text(template.label) }) }
+                    items(state.templates) { template ->
+                        val applied = state.baseUrl.trim() == template.url && state.model.trim() == template.model
+                        FilterChip(applied, { viewModel.applyTemplate(template) }, { Text(template.label) })
+                    }
                 }
                 OutlinedTextField(state.baseUrl, viewModel::onBaseUrlChange, Modifier.fillMaxWidth(), label = { Text(if (state.exactEndpoint) "完整请求端点" else "服务地址") }, placeholder = { Text(if (state.exactEndpoint) "https://api.example.com/custom/chat" else "https://api.example.com/v1") }, singleLine = true)
                 Text(
@@ -142,10 +147,16 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit, modifier: M
                     state.apiKey,
                     viewModel::onApiKeyChange,
                     Modifier.fillMaxWidth(),
-                    label = { Text(if (state.hasStoredKey) "API Key（已保存，留空不变）" else "API Key") },
-                    singleLine = true,
+                    label = { Text(if (state.hasStoredKey) "API Key（已保存，留空不变）" else "API Key") },                    singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
                 )
+                if (state.keyUnreadable) {
+                    Text(
+                        "已保存的 API Key 无法解密（通常是更换了锁屏方式，或从备份恢复到了新设备）。请重新填写一次密钥。",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("允许图片参与 AI 整理", style = MaterialTheme.typography.bodyMedium)
@@ -156,9 +167,9 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit, modifier: M
                 AnimatedVisibility(state.allowImageAnalysis) {
                     OutlinedTextField(state.visionModel, viewModel::onVisionModelChange, Modifier.fillMaxWidth(), label = { Text("视觉模型") }, placeholder = { Text("例如 gpt-4o-mini") }, singleLine = true)
                 }
-                Row(Modifier.fillMaxWidth().clickable { showAdvanced = !showAdvanced }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().clickable(onClickLabel = "展开高级鉴权设置") { showAdvanced = !showAdvanced }.heightIn(min = 48.dp).padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("高级鉴权设置", style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
-                    Icon(Icons.Rounded.ChevronRight, null)
+                    Icon(Icons.Rounded.ChevronRight, if (showAdvanced) "收起" else "展开")
                 }
                 AnimatedVisibility(showAdvanced) {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -192,7 +203,7 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit, modifier: M
                     Switch(state.reminderEnabled, ::toggleReminder)
                 }
                 OutlinedButton(onClick = { showTimePicker = true }, enabled = state.reminderEnabled, modifier = Modifier.fillMaxWidth()) {
-                    Text("提醒时间  %02d:%02d".format(state.reminderHour, state.reminderMinute))
+                    Text("提醒时间  %02d:%02d".format(Locale.CHINA, state.reminderHour, state.reminderMinute))
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
@@ -217,7 +228,8 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit, modifier: M
                     modifier = Modifier.fillMaxWidth(),
                 ) { Icon(Icons.Rounded.Download, null); Spacer(Modifier.size(8.dp)); Text("导出可读 Markdown") }
                 OutlinedButton(
-                    onClick = { restorePicker.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) },
+                    // 不要带 "*/*"：通配符会覆盖前面的具体类型，选择器就变成「任意文件」了。
+                    onClick = { restorePicker.launch(arrayOf("application/zip", "application/octet-stream")) },
                     enabled = !state.dataBusy,
                     modifier = Modifier.fillMaxWidth(),
                 ) { Icon(Icons.Rounded.Upload, null); Spacer(Modifier.size(8.dp)); Text("恢复备份") }

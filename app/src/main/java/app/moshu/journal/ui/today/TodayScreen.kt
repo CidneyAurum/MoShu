@@ -1,6 +1,6 @@
 package app.moshu.journal.ui.today
 
-import android.graphics.ImageDecoder
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
@@ -47,6 +47,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -63,6 +64,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.moshu.journal.data.media.ImageStorage
 import app.moshu.journal.ui.components.EntryCard
@@ -88,6 +92,16 @@ fun TodayScreen(
     val today = LocalDate.now()
     var promptOffset by remember(today) { mutableStateOf(0) }
     val prompt = prompts[(today.dayOfYear + promptOffset) % prompts.size]
+
+    // 应用长时间驻留后台后跨过午夜时，需要把「今天」的范围推到新的一天。
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) viewModel.refreshDay()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -122,10 +136,14 @@ fun TodayScreen(
                     }
                 }
                 CaptureComposer(state.saving, viewModel::add)
+                if (state.message.isNotBlank()) {
+                    Text(state.message, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error)
+                }
                 TodayStats(
                     entryCount = state.entries.size,
                     pendingCount = state.pendingCount,
                     todoCount = state.activeTodos.size,
+                    online = state.online,
                     onMemory = onOpenMemory,
                     onActions = onOpenActions,
                 )
@@ -136,7 +154,13 @@ fun TodayScreen(
                 MoShuSectionTitle("今天的记忆", action = if (state.entries.isNotEmpty()) "查看全部" else null, onAction = onOpenMemory)
             }
         }
-        if (state.entries.isEmpty()) {
+        if (state.loading) {
+            item {
+                Box(Modifier.fillMaxWidth().padding(vertical = 40.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+                }
+            }
+        } else if (state.entries.isEmpty()) {
             item { MoShuEmptyState("今天还很轻", "记下一句话或一张图，让今天留下轮廓。", icon = Icons.Rounded.EditNote) }
         } else {
             items(state.entries.take(4), key = { it.id }) { entry ->
@@ -196,11 +220,19 @@ private fun CaptureComposer(saving: Boolean, onAdd: (String, List<Uri>, () -> Un
                     images.take(4).forEach { uri ->
                         Box(Modifier.size(62.dp).clip(RoundedCornerShape(12.dp))) {
                             UriImage(uri, Modifier.fillMaxSize())
-                            Icon(
-                                Icons.Rounded.Close,
-                                contentDescription = "移除图片",
-                                modifier = Modifier.align(Alignment.TopEnd).size(22.dp).background(MaterialTheme.colorScheme.surface.copy(alpha = 0.85f), CircleShape).clickable { images.remove(uri) }.padding(3.dp),
-                            )
+                            // 触控区补到 48dp，避免 22dp 的「移除」既难点中又容易误触。
+                            Box(
+                                modifier = Modifier.align(Alignment.TopEnd).size(48.dp)
+                                    .clickable(onClickLabel = "移除这张图片") { images.remove(uri) },
+                                contentAlignment = Alignment.TopEnd,
+                            ) {
+                                Box(
+                                    modifier = Modifier.size(24.dp).background(MaterialTheme.colorScheme.surface.copy(alpha = 0.85f), CircleShape),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Icon(Icons.Rounded.Close, "移除图片", Modifier.size(16.dp))
+                                }
+                            }
                         }
                     }
                     if (images.size > 4) {
@@ -245,10 +277,12 @@ private fun CaptureComposer(saving: Boolean, onAdd: (String, List<Uri>, () -> Un
 }
 
 @Composable
-private fun TodayStats(entryCount: Int, pendingCount: Int, todoCount: Int, onMemory: () -> Unit, onActions: () -> Unit) {
+private fun TodayStats(entryCount: Int, pendingCount: Int, todoCount: Int, online: Boolean, onMemory: () -> Unit, onActions: () -> Unit) {
+    // 离线时 AI 整理任务被网络约束挡住不会执行，这里如实说明，避免看起来像卡死。
+    val pendingLabel = if (pendingCount > 0 && !online) "等待网络" else "整理中"
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
         StatCard("记录", entryCount.toString(), Modifier.weight(1f).clip(MaterialTheme.shapes.medium).clickable(onClick = onMemory))
-        StatCard("整理中", pendingCount.toString(), Modifier.weight(1f))
+        StatCard(pendingLabel, pendingCount.toString(), Modifier.weight(1f))
         StatCard("待行动", todoCount.toString(), Modifier.weight(1f).clip(MaterialTheme.shapes.medium).clickable(onClick = onActions))
     }
 }
@@ -270,18 +304,33 @@ private fun UriImage(uri: Uri, modifier: Modifier = Modifier) {
     LaunchedEffect(uri) {
         bitmap = withContext(Dispatchers.IO) {
             runCatching {
-                val decoded = if (Build.VERSION.SDK_INT >= 28) decodeModern(context, uri) else @Suppress("DEPRECATION") MediaStore.Images.Media.getBitmap(context.contentResolver, uri)
-                decoded.asImageBitmap()
+                // 预览图只有 62dp，必须下采样：全尺寸解码一张相机原图就是几十 MB，
+                // 同时选 4 张足以把内存打满。
+                val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                context.contentResolver.openInputStream(uri)?.use { android.graphics.BitmapFactory.decodeStream(it, null, bounds) }
+                val sample = sampleSizeFor(bounds.outWidth, bounds.outHeight, THUMBNAIL_TARGET_PX)
+                val options = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+                val decoded = context.contentResolver.openInputStream(uri)?.use { stream ->
+                    android.graphics.BitmapFactory.decodeStream(stream, null, options)
+                }
+                decoded?.asImageBitmap()
             }.getOrNull()
         }
     }
-    if (bitmap != null) Image(bitmap!!, null, modifier, contentScale = ContentScale.Crop)
+    val current = bitmap
+    if (current != null) Image(current, null, modifier, contentScale = ContentScale.Crop)
     else Box(modifier.background(MaterialTheme.colorScheme.surfaceVariant))
 }
 
-@androidx.annotation.RequiresApi(28)
-private fun decodeModern(context: android.content.Context, uri: Uri): android.graphics.Bitmap =
-    ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, uri))
+private const val THUMBNAIL_TARGET_PX = 256
+
+/** 返回使宽高都不小于 target 的最小 2 的幂采样率。 */
+private fun sampleSizeFor(width: Int, height: Int, target: Int): Int {
+    if (width <= 0 || height <= 0) return 1
+    var sample = 1
+    while (width / (sample * 2) >= target && height / (sample * 2) >= target) sample *= 2
+    return sample
+}
 
 private fun greeting(): String = when (java.time.LocalTime.now().hour) {
     in 5..10 -> "早上好，慢慢开始。"
