@@ -10,6 +10,29 @@
 
 ---
 
+## 落地状态（按代码核实，非仅按提交记录）
+
+已实现（代码中可见对应符号与调用点）：
+
+- R01 失败通知深链与筛选：`EXTRA_OPEN_AI_FAILURES` 在 `EnrichmentWorker`/`MainActivity` 两处共用。
+- R02 撤销：`NoticeBus` + `JournalRepository.restoreEntry`（4 个文件引用），附件清理由事务内改为延迟执行。
+- R03 铃声选择器改为带预览的单选列表。
+- R04 卡片长按菜单 + `JournalRepository.duplicateEntry`（3 个文件）。
+- R05 草稿持久化：独立 DataStore `moshu_draft`。
+- R06 AI 整理完成反馈：详情页显示「已由 <model> 整理」。
+- R07 独立 AI 通知渠道。
+- R09 / R10 搜索命中数与排序、清除筛选。
+- R13 / R14 / R22 / R23 / R28 / R40 / R43 / R45：修改时间、放弃修改确认、清空对话、回顾编辑落库、Key 明文开关、AI 建议待办独立分区、统一确认弹窗、备份字段补全（`isAiSuggested` 等 7 个文件可查）。
+
+部分实现（核心动作未完成，需继续）：
+
+- **R11**：只统一了文案与状态描述，**未**合并散落的 AI 动作入口。`ai/Actions.kt` 类文件不存在，「重新整理」仍分别在 `ui/components/MoShuComponents.kt:302`、`ui/components/MoShuComponents.kt:477`、`ui/detail/EntryDetailScreen.kt:251` 三处各自实现。这是用户原始抱怨「AI 动作散落三处」的那一轮，需要真正收口。
+- **R50**：合并已完成一半——`ai/Hosts.kt`、`ui/components/MoodOptions.kt`、`ui/LocalMoShuApp.kt` 已抽出并接入；但 DELETE 清单（`AttachmentDao.observeAll()` 等无引用成员）尚未执行删除。
+
+尚未实现：R08、R12、R15–R21、R24–R27、R29–R39、R41、R42、R44、R46–R49。
+
+---
+
 ## R01 [BLOCKER] AI 整理失败通知跳到了错误的页面
 
 - 现状: `ai/EnrichmentWorker.kt:162-170` 构造失败通知的 `PendingIntent` 时写死 `putExtra("open_actions", true)`；`MainActivity.kt:91-93` 与 `MainActivity.kt:149` 只识别这一个 extra，于是点通知一定落到「行动」页。但失败的统计来自 `EntryDao.countFailed()`（`data/db/EntryDao.kt:54-55`，`entries.aiState='failed'`），「行动」页是待办列表，根本不显示失败记录，用户点进去什么也找不到。
