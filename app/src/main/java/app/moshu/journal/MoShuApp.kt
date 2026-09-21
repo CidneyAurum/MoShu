@@ -2,9 +2,11 @@ package app.moshu.journal
 
 import android.app.Application
 import app.moshu.journal.ai.EnrichmentWorker
+import app.moshu.journal.data.NoticeBus
 import app.moshu.journal.data.db.AppDatabase
 import app.moshu.journal.data.db.EntryAiState
 import app.moshu.journal.data.JournalRepository
+import app.moshu.journal.data.settings.DraftStore
 import app.moshu.journal.data.settings.SettingsRepository
 import app.moshu.journal.reminder.Notifications
 import app.moshu.journal.reminder.ReminderScheduler
@@ -13,6 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import java.io.File
 
 class MoShuApp : Application() {
 
@@ -22,16 +25,39 @@ class MoShuApp : Application() {
         private set
     lateinit var journal: JournalRepository
         private set
+    lateinit var drafts: DraftStore
+        private set
+
+    /** 全局提示总线（撤销、AI 完成等），由主界面的一个 snackbar 宿主统一承接。 */
+    val notices = NoticeBus()
 
     override fun onCreate() {
         super.onCreate()
         instance = this
         database = AppDatabase.build(this)
         settings = SettingsRepository(applicationContext)
+        drafts = DraftStore(applicationContext)
         journal = JournalRepository(applicationContext, database, settings)
         Notifications.ensureChannel(this)
+        Notifications.ensureAiChannel(this)
+        cleanupOrphanAttachments()
         recoverInterruptedEnrichments()
         restoreReminders()
+    }
+
+    /**
+     * 清理没有被任何附件行引用的图片文件。
+     * 延迟删除的任务活在内存里，进程在撤销窗口内被杀就会留下孤儿文件。
+     */
+    private fun cleanupOrphanAttachments() {
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            runCatching {
+                val known = database.attachmentDao().allOnce().map { it.localPath }.toSet()
+                File(filesDir, "attachments").listFiles()?.forEach { file ->
+                    if (file.isFile && file.absolutePath !in known) file.delete()
+                }
+            }
+        }
     }
 
     /**

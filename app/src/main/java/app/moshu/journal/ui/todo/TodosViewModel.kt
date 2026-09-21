@@ -17,6 +17,8 @@ import java.time.ZoneId
 
 data class TodosUiState(
     val active: List<TodoEntity> = emptyList(),
+    /** AI 提取但尚未被采纳的行动。它们不属于正式列表，单独成区等待用户表态。 */
+    val suggested: List<TodoEntity> = emptyList(),
     val completed: List<TodoEntity> = emptyList(),
     val showCompleted: Boolean = false,
     val message: String = "",
@@ -32,12 +34,13 @@ class TodosViewModel : ViewModel() {
 
     val uiState: StateFlow<TodosUiState> = combine(
         app.database.todoDao().observeActive().onEach { loaded.value = true },
+        app.database.todoDao().observeSuggested(),
         app.database.todoDao().observeDone(),
         showCompleted,
         message,
-        loaded,
-    ) { active, done, show, note, isLoaded -> TodosUiState(active, done, show, note, !isLoaded) }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TodosUiState())
+    ) { active, suggested, done, show, note ->
+        TodosUiState(active, suggested, done, show, note, !loaded.value)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TodosUiState())
 
     fun setShowCompleted(show: Boolean) { showCompleted.value = show }
 
@@ -92,15 +95,50 @@ class TodosViewModel : ViewModel() {
         viewModelScope.launch {
             TodoReminderWorker.cancel(app, todo.uid)
             app.database.todoDao().deleteById(todo.id)
+            app.notices.post("已删除「${todo.text.take(18)}」", "撤销") {
+                viewModelScope.launch { reinsert(listOf(todo)) }
+            }
         }
     }
 
-    /** 一键清空已完成列表，同时取消对应提醒。 */
+    /** 一键清空已完成列表，同时取消对应提醒。整批删除可以一次撤销。 */
     fun clearCompleted() {
         viewModelScope.launch {
-            uiState.value.completed.forEach { todo ->
+            val removed = uiState.value.completed
+            if (removed.isEmpty()) return@launch
+            removed.forEach { todo ->
                 TodoReminderWorker.cancel(app, todo.uid)
                 app.database.todoDao().deleteById(todo.id)
+            }
+            app.notices.post("已清空 ${removed.size} 条已完成行动", "撤销") {
+                viewModelScope.launch { reinsert(removed) }
+            }
+        }
+    }
+
+    /** 把已完成退回进行中；截止日仍在则按需重新排提醒。 */
+    fun restore(todo: TodoEntity) {
+        viewModelScope.launch {
+            val updated = todo.copy(done = false, completedAt = null, updatedAt = System.currentTimeMillis())
+            app.database.todoDao().update(updated)
+            if (updated.reminderAt != null) TodoReminderWorker.schedule(app, updated)
+        }
+    }
+
+    /** 采纳 AI 建议：转为用户自有行动后才会出现在正式列表里。 */
+    fun acceptSuggested(todo: TodoEntity) {
+        viewModelScope.launch { app.journal.acceptAiTodo(todo) }
+    }
+
+    fun dismissSuggested(todo: TodoEntity) {
+        viewModelScope.launch { app.journal.dismissAiTodo(todo) }
+    }
+
+    private suspend fun reinsert(todos: List<TodoEntity>) {
+        todos.forEach { todo ->
+            app.database.todoDao().insert(todo.copy(id = 0))
+            if (!todo.done && todo.reminderAt != null) {
+                app.database.todoDao().byUid(todo.uid)?.let { TodoReminderWorker.schedule(app, it) }
             }
         }
     }

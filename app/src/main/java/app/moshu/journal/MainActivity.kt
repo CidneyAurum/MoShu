@@ -28,9 +28,14 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -77,6 +82,8 @@ class MainActivity : ComponentActivity() {
     private val settingsRequest = mutableIntStateOf(0)
     /** 分享进来时请求跳回「今天」的令牌。 */
     private val todayRequest = mutableIntStateOf(0)
+    /** AI 整理失败通知请求跳到「记忆」页失败筛选的令牌。 */
+    private val failedRequest = mutableIntStateOf(0)
 
     /**
      * 从外部分享进来的文字（ACTION_SEND / PROCESS_TEXT）。
@@ -90,6 +97,9 @@ class MainActivity : ComponentActivity() {
         // 每次都读会把用户从当前页面拽回「行动」。
         if (savedInstanceState == null && intent.getBooleanExtra(EXTRA_OPEN_ACTIONS, false)) {
             actionsRequest.intValue = 1
+        }
+        if (savedInstanceState == null && intent.getBooleanExtra(EXTRA_OPEN_AI_FAILURES, false)) {
+            failedRequest.intValue = 1
         }
         if (savedInstanceState == null) consumeSharedText(intent)
         enableEdgeToEdge()
@@ -121,6 +131,7 @@ class MainActivity : ComponentActivity() {
                             actionsToken = actionsRequest.intValue,
                             openSettingsToken = settingsRequest.intValue,
                             todayToken = todayRequest.intValue,
+                            failedToken = failedRequest.intValue,
                             sharedDraft = sharedDraft.value,
                             onDraftConsumed = { sharedDraft.value = "" },
                         )
@@ -147,6 +158,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         if (intent.getBooleanExtra(EXTRA_OPEN_ACTIONS, false)) actionsRequest.intValue += 1
+        if (intent.getBooleanExtra(EXTRA_OPEN_AI_FAILURES, false)) failedRequest.intValue += 1
         consumeSharedText(intent)
     }
 
@@ -167,8 +179,10 @@ class MainActivity : ComponentActivity() {
         todayRequest.intValue += 1
     }
 
-    private companion object {
+    /** 通知与外部 Intent 使用的 extra 名。通知构造方引用同一常量，避免字符串拼写漂移。 */
+    companion object {
         const val EXTRA_OPEN_ACTIONS = "open_actions"
+        const val EXTRA_OPEN_AI_FAILURES = "open_ai_failures"
     }
 }
 
@@ -196,6 +210,7 @@ private fun MoShuRoot(
     actionsToken: Int,
     openSettingsToken: Int = 0,
     todayToken: Int = 0,
+    failedToken: Int = 0,
     sharedDraft: String = "",
     onDraftConsumed: () -> Unit = {},
 ) {
@@ -208,15 +223,34 @@ private fun MoShuRoot(
     val activeTodos by todoCountFlow.collectAsStateWithLifecycle(0)
     val topLevel = destinations.any { it.route == currentRoute }
 
-    androidx.compose.runtime.LaunchedEffect(actionsToken) {
+    // 全局提示宿主：撤销、AI 整理完成等提示都从这里出，各页面不必各写一套 SnackbarHost。
+    val snackbar = remember { SnackbarHostState() }
+    val noticeBus = remember { MoShuApp.instance.notices }
+    LaunchedEffect(noticeBus) {
+        noticeBus.events.collect { notice ->
+            val result = snackbar.showSnackbar(
+                message = notice.message,
+                actionLabel = notice.actionLabel,
+                withDismissAction = notice.actionLabel == null,
+                duration = SnackbarDuration.Short,
+            )
+            if (result == SnackbarResult.ActionPerformed) notice.action?.invoke()
+        }
+    }
+
+    LaunchedEffect(actionsToken) {
         if (actionsToken > 0) navigateTop(navController, Routes.ACTIONS)
     }
-    androidx.compose.runtime.LaunchedEffect(openSettingsToken) {
+    LaunchedEffect(openSettingsToken) {
         if (openSettingsToken > 0) navController.navigate(Routes.SETTINGS)
     }
     // 从外部分享进来时跳回「今天」，让用户看到预填的草稿
-    androidx.compose.runtime.LaunchedEffect(todayToken) {
+    LaunchedEffect(todayToken) {
         if (todayToken > 0) navigateTop(navController, Routes.TODAY)
+    }
+    // 整理失败通知：直接进「记忆」并打开失败筛选，而不是把用户丢到待办列表。
+    LaunchedEffect(failedToken) {
+        if (failedToken > 0) navigateTop(navController, Routes.MEMORY)
     }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -224,7 +258,7 @@ private fun MoShuRoot(
         if (useRail) {
             Row(Modifier.fillMaxSize()) {
                 if (topLevel) NavigationItems(currentRoute, activeTodos, vertical = true) { navigateTop(navController, it) }
-                AppNavHost(navController, Modifier.weight(1f), actionsToken, sharedDraft, onDraftConsumed)
+                AppNavHost(navController, Modifier.weight(1f), actionsToken, failedToken, sharedDraft, onDraftConsumed)
             }
         } else {
             Scaffold(
@@ -232,8 +266,10 @@ private fun MoShuRoot(
                 bottomBar = {
                     if (topLevel) NavigationItems(currentRoute, activeTodos, vertical = false) { navigateTop(navController, it) }
                 },
-            ) { padding -> AppNavHost(navController, Modifier.padding(padding), actionsToken, sharedDraft, onDraftConsumed) }
+            ) { padding -> AppNavHost(navController, Modifier.padding(padding), actionsToken, failedToken, sharedDraft, onDraftConsumed) }
         }
+        // 底栏之上留出空间，避免 snackbar 压住导航项。
+        SnackbarHost(snackbar, modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = if (useRail) 16.dp else 88.dp))
     }
 }
 
@@ -278,6 +314,7 @@ private fun AppNavHost(
     navController: androidx.navigation.NavHostController,
     modifier: Modifier,
     actionsToken: Int,
+    failedToken: Int = 0,
     sharedDraft: String = "",
     onDraftConsumed: () -> Unit = {},
 ) {
@@ -299,8 +336,11 @@ private fun AppNavHost(
                 )
             }
             composable(Routes.MEMORY) {
+                val memoryViewModel = viewModel<RecordViewModel>()
+                // 失败通知 deep link：进入时默认打开「整理失败」筛选。
+                LaunchedEffect(failedToken) { if (failedToken > 0) memoryViewModel.setFailedOnly(true) }
                 MemoryScreen(
-                    viewModel = viewModel<RecordViewModel>(),
+                    viewModel = memoryViewModel,
                     onOpenEntry = { navController.navigate(Routes.entry(it)) },
                     onSettings = { navController.navigate(Routes.SETTINGS) },
                 )

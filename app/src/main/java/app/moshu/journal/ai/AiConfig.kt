@@ -48,7 +48,8 @@ data class AiConfig(
         val TEMPLATES = listOf(
             Template("DeepSeek", "https://api.deepseek.com", "deepseek-chat"),
             Template("OpenAI", "https://api.openai.com/v1", "gpt-4o-mini", visionModel = "gpt-4o-mini"),
-            Template("基元律动", "https://tokenrhythm.studio/v1", "deepseek-v4-flash"),
+            // 稳定别名优先：带日期的版本号会随服务商轮换而失效
+            Template("基元律动", "https://tokenrhythm.studio/v1", "deepseek-flash"),
             Template(
                 "通义千问",
                 "https://dashscope.aliyuncs.com/compatible-mode/v1",

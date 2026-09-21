@@ -157,14 +157,25 @@ class EntryDetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel() {
     }
 
     fun deleteImage(attachmentId: Long) {
-        viewModelScope.launch { app.journal.deleteAttachment(attachmentId, entryId) }
+        viewModelScope.launch {
+            val removed = app.journal.deleteAttachment(attachmentId, entryId) ?: return@launch
+            app.notices.post("已删除这张图片", "撤销") {
+                viewModelScope.launch { app.journal.restoreAttachment(removed) }
+            }
+        }
     }
 
     fun delete(onDeleted: () -> Unit) {
         viewModelScope.launch {
             try {
-                app.journal.deleteEntry(entryId)
+                val deleted = app.journal.deleteEntry(entryId)
                 onDeleted()
+                if (deleted != null) {
+                    // 删除后先离开详情页，撤销入口由全局 snackbar 承接。
+                    app.notices.post("已删除这条记忆", "撤销") {
+                        viewModelScope.launch { app.journal.restoreEntry(deleted) }
+                    }
+                }
             } catch (error: Exception) {
                 message.value = "删除失败：${error.message ?: "请稍后重试"}"
             }

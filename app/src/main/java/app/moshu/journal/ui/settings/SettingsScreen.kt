@@ -33,7 +33,10 @@ import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.Palette
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Upload
+import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -42,15 +45,18 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TimePicker
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -63,6 +69,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -84,6 +91,7 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit, modifier: M
     var showAdvanced by remember { mutableStateOf(false) }
     var showTimePicker by remember { mutableStateOf(false) }
     var showSoundDialog by remember { mutableStateOf(false) }
+    var showKey by remember { mutableStateOf(false) }
     var restoreUri by remember { mutableStateOf<Uri?>(null) }
     var replaceUri by remember { mutableStateOf<Uri?>(null) }
     val apiKeyFocus = remember { FocusRequester() }
@@ -197,7 +205,16 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit, modifier: M
                     Modifier.fillMaxWidth().focusRequester(apiKeyFocus),
                     label = { Text(if (state.hasStoredKey) "API Key（已保存，留空不变）" else "API Key") },
                     singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
+                    // 粘贴后无法核对是否漏字符，所以给一个显式的明文开关（默认仍是密文）。
+                    visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { showKey = !showKey }) {
+                            Icon(
+                                if (showKey) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
+                                contentDescription = if (showKey) "隐藏密钥" else "显示密钥",
+                            )
+                        }
+                    },
                     isError = state.apiKeyError.isNotBlank(),
                     // 与今日页的计数器一致：始终提供 supportingText 槽位，只在有错时渲染内容。
                     supportingText = { if (state.apiKeyError.isNotBlank()) Text(state.apiKeyError) },
@@ -340,17 +357,19 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit, modifier: M
         )
     }
     if (showSoundDialog) {
-        AlertDialog(
-            onDismissRequest = { showSoundDialog = false },
-            title = { Text("提醒铃声") },
-            text = {
-                Column {
-                    TextButton(onClick = { viewModel.saveReminderSound(Notifications.SOUND_DEFAULT); Notifications.applyChannelSound(context, Notifications.SOUND_DEFAULT); showSoundDialog = false }) { Text("系统默认") }
-                    TextButton(onClick = { viewModel.saveReminderSound(Notifications.SOUND_SILENT); Notifications.applyChannelSound(context, Notifications.SOUND_SILENT); showSoundDialog = false }) { Text("静音") }
-                    TextButton(onClick = { showSoundDialog = false; soundPicker.launch(arrayOf("audio/*")) }) { Text("选择音频文件…") }
-                }
+        ReminderSoundDialog(
+            context = context,
+            current = state.reminderSound,
+            onPick = { mode ->
+                viewModel.saveReminderSound(mode)
+                Notifications.applyChannelSound(context, mode)
+                showSoundDialog = false
             },
-            confirmButton = {},
+            onPickFile = {
+                showSoundDialog = false
+                soundPicker.launch(arrayOf("audio/*"))
+            },
+            onDismiss = { showSoundDialog = false },
         )
     }
     restoreUri?.let { uri ->
@@ -377,6 +396,99 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit, modifier: M
             confirmButton = { Button(onClick = { viewModel.restore(uri, true); replaceUri = null }) { Text("清空并恢复") } },
             dismissButton = { TextButton(onClick = { replaceUri = null }) { Text("取消") } },
         )
+    }
+}
+
+/**
+ * 提醒铃声选择器。原先只是三个裸文字按钮：看不出当前选中的是哪个，
+ * 也没法试听——而铃声恰恰是「不试听就选错」的典型设置。
+ */
+@Composable
+private fun ReminderSoundDialog(
+    context: android.content.Context,
+    current: String,
+    onPick: (String) -> Unit,
+    onPickFile: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var playing by remember { mutableStateOf<android.media.Ringtone?>(null) }
+
+    fun preview(mode: String) {
+        playing?.runCatching { stop() }
+        playing = null
+        val uri = when (mode) {
+            Notifications.SOUND_DEFAULT -> android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_NOTIFICATION)
+            Notifications.SOUND_SILENT -> null
+            else -> android.net.Uri.parse(mode)
+        } ?: return
+        playing = runCatching { android.media.RingtoneManager.getRingtone(context, uri) }.getOrNull()
+        playing?.play()
+    }
+
+    // 对话框关掉就停掉试听，否则铃声会一直响。
+    DisposableEffect(Unit) { onDispose { playing?.runCatching { stop() } } }
+
+    AlertDialog(
+        onDismissRequest = { playing?.runCatching { stop() }; onDismiss() },
+        title = { Text("提醒铃声") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                listOf(
+                    Notifications.SOUND_DEFAULT to ("系统默认" to "使用系统通知音"),
+                    Notifications.SOUND_SILENT to ("静音" to "只显示通知，不发声"),
+                ).forEach { (mode, labels) ->
+                    SoundOptionRow(
+                        label = labels.first,
+                        description = labels.second,
+                        selected = current == mode,
+                        onSelect = { onPick(mode) },
+                        onPreview = { preview(mode) },
+                    )
+                }
+                SoundOptionRow(
+                    label = if (current.isNotEmpty() && current != Notifications.SOUND_SILENT) {
+                        Notifications.soundLabel(context, current)
+                    } else {
+                        "自定义音频文件"
+                    },
+                    description = "从本机选择一段音频作为提醒音",
+                    selected = current.isNotEmpty() && current != Notifications.SOUND_SILENT,
+                    onSelect = onPickFile,
+                    onPreview = { preview(current) },
+                    previewEnabled = current.isNotEmpty() && current != Notifications.SOUND_SILENT,
+                )
+                Text(
+                    "确定后立即生效；系统通知渠道会按新铃声重建。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = { playing?.runCatching { stop() }; onDismiss() }) { Text("完成") } },
+    )
+}
+
+@Composable
+private fun SoundOptionRow(
+    label: String,
+    description: String,
+    selected: Boolean,
+    onSelect: () -> Unit,
+    onPreview: () -> Unit,
+    previewEnabled: Boolean = true,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().clickable(onClickLabel = "选择$label") { onSelect() }.heightIn(min = 48.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = selected, onClick = onSelect)
+        Column(Modifier.weight(1f)) {
+            Text(label, style = MaterialTheme.typography.bodyMedium)
+            Text(description, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        IconButton(onClick = onPreview, enabled = previewEnabled) {
+            Icon(Icons.Rounded.PlayArrow, contentDescription = "试听$label")
+        }
     }
 }
 

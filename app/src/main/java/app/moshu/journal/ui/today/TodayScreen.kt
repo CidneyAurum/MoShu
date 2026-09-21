@@ -46,6 +46,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -72,9 +73,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.moshu.journal.MoShuApp
 import app.moshu.journal.data.media.ImageStorage
 import app.moshu.journal.ui.components.EntryCard
+import app.moshu.journal.ui.components.EntryCardActions
 import app.moshu.journal.ui.components.MoShuEmptyState
 import app.moshu.journal.ui.components.MoShuPageHeader
 import app.moshu.journal.ui.components.MoShuSectionTitle
+import app.moshu.journal.ui.components.shareEntry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -102,10 +105,18 @@ fun TodayScreen(
     var promptOffset by remember(today) { mutableStateOf(0) }
     val prompt = prompts[(today.dayOfYear + promptOffset) % prompts.size]
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     // 未配置 AI 时不该展示「整理中」这类卡片：它在宣传一个关掉的功能，还像卡住的任务。
     val aiConfigured by remember { MoShuApp.instance.settings.aiConfig.map { it.valid } }
         .collectAsStateWithLifecycle(false)
     val retryAi: (Long) -> Unit = onRetryAi ?: { id -> scope.launch { MoShuApp.instance.journal.reEnrich(id) } }
+
+    // 整理完成是一次静默的写库，必须给一次可见反馈，否则用户不知道发生了什么。
+    LaunchedEffect(state.justEnrichedId) {
+        val id = state.justEnrichedId ?: return@LaunchedEffect
+        viewModel.consumeEnriched()
+        MoShuApp.instance.notices.post("AI 整理完成", "查看") { onOpenEntry(id) }
+    }
 
     // 应用长时间驻留后台后跨过午夜时，需要把「今天」的范围推到新的一天。
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -149,7 +160,14 @@ fun TodayScreen(
                         }
                     }
                 }
-                CaptureComposer(state.saving, viewModel::add, initialDraft, onDraftConsumed)
+                CaptureComposer(
+                    saving = state.saving,
+                    draft = state.draft,
+                    onDraftChange = viewModel::onDraftChange,
+                    onAdd = viewModel::add,
+                    initialDraft = initialDraft,
+                    onDraftConsumed = onDraftConsumed,
+                )
                 if (state.message.isNotBlank()) {
                     Text(state.message, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error)
                 }
@@ -185,7 +203,23 @@ fun TodayScreen(
                     modifier = Modifier.padding(horizontal = 20.dp),
                     attachments = state.attachments[entry.id].orEmpty(),
                     onRetryAi = { retryAi(entry.id) },
+                    actions = EntryCardActions(
+                        onEdit = { onOpenEntry(entry.id) },
+                        onDuplicate = { viewModel.duplicate(entry) },
+                        onTogglePin = { viewModel.togglePinned(entry) },
+                        onShare = { shareEntry(context, entry) },
+                        onDelete = { viewModel.delete(entry) },
+                        onRetryAi = { retryAi(entry.id) },
+                    ),
                 )
+            }
+            // 第 5 条起原先直接消失，用户会以为记录没存上。
+            if (state.entries.size > 4) {
+                item {
+                    TextButton(onClick = onOpenMemory, modifier = Modifier.padding(horizontal = 20.dp)) {
+                        Text("还有 ${state.entries.size - 4} 条今天的记忆 →")
+                    }
+                }
             }
         }
     }
@@ -194,15 +228,16 @@ fun TodayScreen(
 @Composable
 private fun CaptureComposer(
     saving: Boolean,
+    draft: String,
+    onDraftChange: (String) -> Unit,
     onAdd: (String, List<Uri>, () -> Unit) -> Unit,
     initialDraft: String = "",
     onDraftConsumed: () -> Unit = {},
 ) {
-    var draft by remember { mutableStateOf("") }
     // 分享进来的文字直接填进输入框，而不是静默入库——用户应当有机会先修改。
     LaunchedEffect(initialDraft) {
         if (initialDraft.isNotBlank()) {
-            draft = initialDraft
+            onDraftChange(initialDraft)
             onDraftConsumed()
         }
     }
@@ -216,10 +251,8 @@ private fun CaptureComposer(
     fun submit() {
         if (!saving && (draft.isNotBlank() || images.isNotEmpty())) {
             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-            onAdd(draft, images.toList()) {
-                draft = ""
-                images.clear()
-            }
+            // 草稿由 ViewModel 在保存成功后清空，这里只负责清掉本地预览的图片。
+            onAdd(draft, images.toList()) { images.clear() }
         }
     }
 
@@ -231,7 +264,7 @@ private fun CaptureComposer(
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             OutlinedTextField(
                 value = draft,
-                onValueChange = { draft = it },
+                onValueChange = onDraftChange,
                 modifier = Modifier.fillMaxWidth(),
                 placeholder = { Text("想到什么，就落下一笔…") },
                 minLines = 3,

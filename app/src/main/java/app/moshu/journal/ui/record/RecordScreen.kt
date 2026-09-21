@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -17,6 +18,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.EditNote
+import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SearchOff
@@ -28,17 +30,21 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.moshu.journal.data.db.Category
 import app.moshu.journal.ui.components.EntryCard
+import app.moshu.journal.ui.components.EntryCardActions
 import app.moshu.journal.ui.components.MoShuEmptyState
 import app.moshu.journal.ui.components.MoShuPageHeader
+import app.moshu.journal.ui.components.shareEntry
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -52,12 +58,15 @@ fun MemoryScreen(
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val filtering = state.filters.active
 
     Column(modifier.fillMaxSize()) {
         if (state.pendingCount > 0) LinearProgressIndicator(Modifier.fillMaxWidth())
         MoShuPageHeader(
             title = "记忆",
-            subtitle = "${state.entries.size} 条正在被记住",
+            // 搜索/筛选时显示命中数，否则用户看不出筛选是否生效。
+            subtitle = if (filtering) "找到 ${state.entries.size} 条" else "${state.entries.size} 条正在被记住",
             onSettings = onSettings,
             actions = {
                 IconButton(onClick = viewModel::toggleSearch) {
@@ -108,6 +117,34 @@ fun MemoryScreen(
                     label = { Text(label) },
                 )
             }
+            item {
+                FilterChip(
+                    selected = state.filters.failedOnly,
+                    onClick = { viewModel.setFailedOnly(!state.filters.failedOnly) },
+                    label = { Text("整理失败") },
+                    leadingIcon = { Icon(Icons.Rounded.ErrorOutline, null) },
+                )
+            }
+        }
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            items(EntrySort.entries.toList()) { sort ->
+                FilterChip(
+                    selected = state.filters.sort == sort,
+                    onClick = { viewModel.setSort(sort) },
+                    label = { Text(sort.label) },
+                )
+            }
+            if (filtering) {
+                item {
+                    TextButton(onClick = viewModel::clearFilters, modifier = Modifier.heightIn(min = 48.dp)) {
+                        Text("清除筛选", style = MaterialTheme.typography.labelLarge)
+                    }
+                }
+            }
         }
 
         if (state.loading) {
@@ -117,9 +154,17 @@ fun MemoryScreen(
         } else if (state.entries.isEmpty()) {
             Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
                 MoShuEmptyState(
-                    if (state.filters.query.isBlank()) "还没有这类记忆" else "没有找到相关记忆",
-                    if (state.filters.query.isBlank()) "换个筛选看看，或回到今天写下一笔。" else "试试更短的关键词或标签。",
-                    icon = if (state.filters.query.isBlank()) Icons.Rounded.EditNote else Icons.Rounded.SearchOff,
+                    when {
+                        state.filters.failedOnly -> "没有整理失败的记忆"
+                        state.filters.query.isNotBlank() -> "没有找到相关记忆"
+                        else -> "还没有这类记忆"
+                    },
+                    when {
+                        state.filters.failedOnly -> "所有记录都整理好了，或换个筛选看看。"
+                        state.filters.query.isNotBlank() -> "试试更短的关键词或标签。"
+                        else -> "换个筛选看看，或回到今天写下一笔。"
+                    },
+                    icon = if (state.filters.query.isNotBlank()) Icons.Rounded.SearchOff else Icons.Rounded.EditNote,
                 )
             }
         } else {
@@ -143,7 +188,18 @@ fun MemoryScreen(
                         }
                     }
                     items(dayEntries, key = { it.id }) { entry ->
-                        EntryCard(entry = entry, onClick = { onOpenEntry(entry.id) }, attachments = state.attachments[entry.id].orEmpty())
+                        EntryCard(
+                            entry = entry,
+                            onClick = { onOpenEntry(entry.id) },
+                            attachments = state.attachments[entry.id].orEmpty(),
+                            actions = EntryCardActions(
+                                onEdit = { onOpenEntry(entry.id) },
+                                onDuplicate = { viewModel.duplicate(entry) },
+                                onTogglePin = { viewModel.togglePinned(entry) },
+                                onShare = { shareEntry(context, entry) },
+                                onDelete = { viewModel.delete(entry) },
+                            ),
+                        )
                     }
                 }
             }
@@ -159,3 +215,10 @@ private val MOOD_FILTERS = listOf(
     "low" to "😕 低落",
     "bad" to "😞 难过",
 )
+
+private val EntrySort.label: String
+    get() = when (this) {
+        EntrySort.NEWEST -> "最新"
+        EntrySort.OLDEST -> "最早"
+        EntrySort.UPDATED -> "最近修改"
+    }

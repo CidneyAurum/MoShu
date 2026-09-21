@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
@@ -312,6 +313,27 @@ class InsightsViewModel : ViewModel() {
     /** 停止当前提问。取消后把问题标成「已中断」，保留重试入口。 */
     fun cancelAsk() {
         askJob?.cancel()
+    }
+
+    /** 清空对话。聊天记录是持久化在本地的，必须给用户一个彻底的删除入口。 */
+    fun clearChat() {
+        askJob?.cancel()
+        messages.value = emptyList()
+        lastExcerpts = emptyList()
+        askHint.value = ""
+        viewModelScope.launch(Dispatchers.IO) { runCatching { chatFile.delete() } }
+    }
+
+    /** 保存用户对月度回顾的本地修改。之前注释写「不落库」，切个月份就丢了。 */
+    fun saveReview(content: String) {
+        val text = content.trim()
+        if (text.isEmpty()) return
+        val offset = monthOffset.value
+        viewModelScope.launch {
+            // 只取一次当前值，避免为了保存而长期订阅。
+            val existing = app.database.aiReviewDao().observe(periodKey(offset)).first() ?: return@launch
+            app.database.aiReviewDao().upsert(existing.copy(content = text))
+        }
     }
 
     private fun startAsk(

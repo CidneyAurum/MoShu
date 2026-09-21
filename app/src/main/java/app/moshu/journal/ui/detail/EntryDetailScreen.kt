@@ -46,6 +46,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -70,6 +71,7 @@ import app.moshu.journal.data.db.EntryAiState
 import app.moshu.journal.data.media.ImageStorage
 import app.moshu.journal.ui.components.EntryImageStrip
 import app.moshu.journal.ui.components.LocalImage
+import app.moshu.journal.ui.components.MoShuConfirmDialog
 import app.moshu.journal.ui.components.MoShuPageHeader
 import app.moshu.journal.ui.components.parseTags
 import java.text.SimpleDateFormat
@@ -92,6 +94,8 @@ fun EntryDetailScreen(
     val aiTodos = state.todos.filter { it.isAiSuggested }
     val linkedTodos = state.todos.filter { !it.isAiSuggested }
     var editing by remember { mutableStateOf(false) }
+    var editorDirty by remember { mutableStateOf(false) }
+    var confirmDiscard by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
     var selectedImage by remember { mutableStateOf<AttachmentEntity?>(null) }
     var todoDraft by remember { mutableStateOf("") }
@@ -129,8 +133,16 @@ fun EntryDetailScreen(
     Column(modifier.fillMaxSize()) {
         MoShuPageHeader(
             title = if (editing) "编辑记忆" else "记忆详情",
-            subtitle = SimpleDateFormat("yyyy年M月d日 HH:mm", Locale.CHINA).format(Date(entry.createdAt)),
-            onBack = onBack,
+            // 改过之后要能看出这条不是原样，否则用户无法判断 AI 是否已重写。
+            subtitle = buildString {
+                append(SimpleDateFormat("yyyy年M月d日 HH:mm", Locale.CHINA).format(Date(entry.createdAt)))
+                if (entry.updatedAt > entry.createdAt) {
+                    append(" · 修改于 ")
+                    append(SimpleDateFormat("M月d日 HH:mm", Locale.CHINA).format(Date(entry.updatedAt)))
+                }
+            },
+            // 编辑态直接返回会静默丢内容，先问一次。
+            onBack = { if (editing && editorDirty) confirmDiscard = true else onBack() },
             actions = {
                 if (!editing) {
                     IconButton(onClick = viewModel::togglePinned) {
@@ -146,9 +158,13 @@ fun EntryDetailScreen(
                 attachments = state.attachments,
                 busy = state.busy,
                 message = state.message,
-                onCancel = { editing = false },
+                onDirtyChange = { editorDirty = it },
+                onCancel = { if (editorDirty) confirmDiscard = true else editing = false },
                 onSave = { content, category, tags, mood, summary ->
-                    viewModel.save(content, category, tags, mood, summary) { editing = false }
+                    viewModel.save(content, category, tags, mood, summary) {
+                        editorDirty = false
+                        editing = false
+                    }
                 },
                 onAddImages = {
                     picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
@@ -173,6 +189,22 @@ fun EntryDetailScreen(
                         InfoPill(Category.nameOf(entry.categoryId))
                         entry.mood.takeIf { it.isNotBlank() }?.let { InfoPill(moodLabel(it)) }
                         parseTags(entry.tagsJson).take(4).forEach { InfoPill("#$it") }
+                    }
+                }
+                if (entry.aiState == EntryAiState.SUCCEEDED.value) {
+                    // 整理成功此前完全不可见，用户无法确认概括/标签是否已更新。
+                    item {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Rounded.AutoAwesome, null, Modifier.size(15.dp), tint = MaterialTheme.colorScheme.secondary)
+                            Spacer(Modifier.size(6.dp))
+                            Text(
+                                "已由 ${entry.aiModel.ifBlank { aiConfig.model.ifBlank { "AI" } }} 整理",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.weight(1f),
+                            )
+                            TextButton(onClick = viewModel::retryAi) { Text("重新整理") }
+                        }
                     }
                 }
                 if (entry.aiState != EntryAiState.SUCCEEDED.value) {
@@ -308,11 +340,25 @@ fun EntryDetailScreen(
         }
     }
 
+    if (confirmDiscard) {
+        MoShuConfirmDialog(
+            title = "放弃这次修改？",
+            body = "你改动的内容还没有保存，离开后会丢失。",
+            confirmLabel = "放弃修改",
+            destructive = true,
+            onConfirm = {
+                editorDirty = false
+                editing = false
+            },
+            onDismiss = { confirmDiscard = false },
+        )
+    }
+
     if (confirmDelete) {
         AlertDialog(
             onDismissRequest = { confirmDelete = false },
             title = { Text("删除这条记忆？") },
-            text = { Text("正文、图片和由它产生的未编辑待办都会一起删除，无法撤销。") },
+            text = { Text("正文、图片和由它产生的未编辑待办都会一起删除；删除后可以立即撤销。") },
             confirmButton = { TextButton(onClick = { confirmDelete = false; viewModel.delete(onBack) }) { Text("删除", color = MaterialTheme.colorScheme.error) } },
             dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("取消") } },
         )
@@ -326,6 +372,7 @@ private fun EntryEditor(
     attachments: List<AttachmentEntity>,
     busy: Boolean,
     message: String,
+    onDirtyChange: (Boolean) -> Unit,
     onCancel: () -> Unit,
     onSave: (String, Int, List<String>, String, String) -> Unit,
     onAddImages: () -> Unit,
@@ -338,6 +385,14 @@ private fun EntryEditor(
     var category by remember(entry.id) { mutableIntStateOf(entry.categoryId) }
     var mood by remember(entry.id) { mutableStateOf(entry.mood) }
     var pendingImageDelete by remember(entry.id) { mutableStateOf<Long?>(null) }
+
+    // 与初值比对判断是否有未保存改动，供返回/取消时拦截。
+    val dirty = content != entry.content ||
+        summary != entry.summary ||
+        category != entry.categoryId ||
+        mood != entry.mood ||
+        tags != parseTags(entry.tagsJson).joinToString("，")
+    LaunchedEffect(dirty) { onDirtyChange(dirty) }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),

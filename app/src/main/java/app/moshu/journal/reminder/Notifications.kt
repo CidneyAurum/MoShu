@@ -15,6 +15,11 @@ import app.moshu.journal.data.db.TodoEntity
 object Notifications {
 
     const val CHANNEL_REMINDER = "journal_reminder"
+    /**
+     * AI 整理结果单独一个渠道。与每日提醒共用渠道会出现「把提醒设成静音后，
+     * 整理失败通知也被一起静音」这种悄悄丢失重要提示的情况。
+     */
+    const val CHANNEL_AI = "journal_ai"
     const val SOUND_DEFAULT = ""
     const val SOUND_SILENT = "silent"
     private const val REMINDER_NOTIFICATION_ID = 1001
@@ -23,6 +28,16 @@ object Notifications {
         val manager = context.getSystemService(NotificationManager::class.java) ?: return
         if (manager.getNotificationChannel(CHANNEL_REMINDER) != null) return
         manager.createNotificationChannel(buildChannel(context, SOUND_DEFAULT))
+    }
+
+    fun ensureAiChannel(context: Context) {
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return
+        if (manager.getNotificationChannel(CHANNEL_AI) != null) return
+        manager.createNotificationChannel(
+            NotificationChannel(CHANNEL_AI, "AI 整理", NotificationManager.IMPORTANCE_DEFAULT).apply {
+                description = "记录整理完成或失败时的提示"
+            }
+        )
     }
 
     /**
@@ -100,7 +115,7 @@ object Notifications {
             notificationId,
             Intent(context, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
-                putExtra("open_actions", true)
+                putExtra(MainActivity.EXTRA_OPEN_ACTIONS, true)
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )

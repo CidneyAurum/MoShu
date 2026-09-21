@@ -68,7 +68,7 @@ class AiConfigTest {
     fun `基元律动模板保留可用模型 id`() {
         val template = AiConfig.TEMPLATES.first { it.label == "基元律动" }
         assertEquals("https://tokenrhythm.studio/v1", template.url)
-        assertEquals("deepseek-v4-flash", template.model)
+        assertEquals("deepseek-flash", template.model)
     }
 
     @Test

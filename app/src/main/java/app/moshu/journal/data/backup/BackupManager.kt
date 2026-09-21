@@ -201,31 +201,36 @@ object BackupManager {
         return getInputStream(entry).bufferedReader(Charsets.UTF_8).use { it.readText() }
     }
 
-    private fun entryJson(e: EntryEntity) = JSONObject().apply {
+    internal fun entryJson(e: EntryEntity) = JSONObject().apply {
         put("uid", e.uid); put("content", e.content); put("categoryId", e.categoryId); put("tagsJson", e.tagsJson)
         put("summary", e.summary); put("mood", e.mood); put("enriched", e.enriched); put("createdAt", e.createdAt)
         put("updatedAt", e.updatedAt); put("isPinned", e.isPinned); put("aiState", e.aiState); put("manualMetadataMask", e.manualMetadataMask)
         // 失败原因也要带上，否则换设备恢复后「整理失败」就没有任何线索了。
         put("aiError", e.aiError)
+        // 产出元数据的模型与提示词版本：不带上就没法在换设备后识别需要重做的条目。
+        put("aiModel", e.aiModel); put("aiPromptVersion", e.aiPromptVersion)
     }
 
-    private fun todoJson(t: TodoEntity, sourceUid: String?) = JSONObject().apply {
+    internal fun todoJson(t: TodoEntity, sourceUid: String?) = JSONObject().apply {
         put("uid", t.uid); put("text", t.text); put("sourceEntryUid", sourceUid.orEmpty()); put("createdAt", t.createdAt)
         put("dueEpochDay", t.dueEpochDay ?: JSONObject.NULL); put("done", t.done); put("updatedAt", t.updatedAt)
         put("completedAt", t.completedAt ?: JSONObject.NULL); put("reminderAt", t.reminderAt ?: JSONObject.NULL)
         put("isUserCreated", t.isUserCreated); put("userEdited", t.userEdited)
+        // 不带这个标记，恢复后 AI 建议的行动会直接混进正式行动列表。
+        put("isAiSuggested", t.isAiSuggested)
     }
 
-    private fun attachmentJson(a: AttachmentEntity, entryUid: String) = JSONObject().apply {
+    internal fun attachmentJson(a: AttachmentEntity, entryUid: String) = JSONObject().apply {
         put("uid", a.uid); put("entryUid", entryUid); put("mimeType", a.mimeType); put("width", a.width); put("height", a.height)
         put("sortOrder", a.sortOrder); put("createdAt", a.createdAt)
     }
 
-    private fun reviewJson(r: AiReviewEntity) = JSONObject().apply {
+    internal fun reviewJson(r: AiReviewEntity) = JSONObject().apply {
         put("periodKey", r.periodKey); put("periodType", r.periodType); put("content", r.content); put("sourceUidsJson", r.sourceUidsJson); put("generatedAt", r.generatedAt)
+        put("model", r.model); put("promptVersion", r.promptVersion); put("entryCount", r.entryCount)
     }
 
-    private fun parseEntry(o: JSONObject, uid: String) = EntryEntity(
+    internal fun parseEntry(o: JSONObject, uid: String) = EntryEntity(
         uid = uid, content = o.optString("content"),
         // 备份可能被手工编辑过或来自更新的版本，枚举与范围都要收敛后再落库，
         // 否则界面会把未知值悄悄显示成「生活」「本地记录」，筛选和统计却对不上。
@@ -237,21 +242,34 @@ object BackupManager {
         aiState = EntryAiState.from(o.optString("aiState", EntryAiState.IDLE.value)).value,
         manualMetadataMask = o.optInt("manualMetadataMask"),
         aiError = o.optString("aiError"),
+        // 旧备份没有这两个键，缺失时落到实体的默认值即可。
+        aiModel = o.optString("aiModel"),
+        aiPromptVersion = o.optInt("aiPromptVersion"),
     )
 
-    private fun parseTodo(o: JSONObject, uid: String, sourceId: Long) = TodoEntity(
+    internal fun parseTodo(o: JSONObject, uid: String, sourceId: Long) = TodoEntity(
         uid = uid, text = o.optString("text"), sourceEntryId = sourceId, createdAt = o.optLong("createdAt", System.currentTimeMillis()),
         dueEpochDay = o.nullableInt("dueEpochDay")?.takeIf { it in -100_000..100_000 },
         done = o.optBoolean("done"), updatedAt = o.optLong("updatedAt", o.optLong("createdAt")),
         completedAt = o.nullableLong("completedAt"), reminderAt = o.nullableLong("reminderAt"),
         isUserCreated = o.optBoolean("isUserCreated"), userEdited = o.optBoolean("userEdited"),
+        isAiSuggested = o.optBoolean("isAiSuggested"),
     )
 
-    private fun parseAttachment(o: JSONObject, uid: String, entryId: Long, path: String) = AttachmentEntity(
+    internal fun parseAttachment(o: JSONObject, uid: String, entryId: Long, path: String) = AttachmentEntity(
         uid = uid, entryId = entryId, localPath = path, mimeType = o.optString("mimeType", "image/jpeg"), width = o.optInt("width"), height = o.optInt("height"), sortOrder = o.optInt("sortOrder"), createdAt = o.optLong("createdAt"),
     )
 
-    private fun parseReview(o: JSONObject) = AiReviewEntity(o.optString("periodKey"), o.optString("periodType"), o.optString("content"), o.optString("sourceUidsJson", "[]"), o.optLong("generatedAt"))
+    internal fun parseReview(o: JSONObject) = AiReviewEntity(
+        periodKey = o.optString("periodKey"),
+        periodType = o.optString("periodType"),
+        content = o.optString("content"),
+        sourceUidsJson = o.optString("sourceUidsJson", "[]"),
+        generatedAt = o.optLong("generatedAt"),
+        model = o.optString("model"),
+        promptVersion = o.optInt("promptVersion"),
+        entryCount = o.optInt("entryCount"),
+    )
     private fun JSONObject.nullableLong(key: String): Long? = if (isNull(key) || !has(key)) null else optLong(key)
     private fun JSONObject.nullableInt(key: String): Int? = if (isNull(key) || !has(key)) null else optInt(key)
 

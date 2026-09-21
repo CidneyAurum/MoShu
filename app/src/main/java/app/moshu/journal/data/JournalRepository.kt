@@ -15,15 +15,34 @@ import app.moshu.journal.data.db.ManualMetadata
 import app.moshu.journal.data.db.TodoEntity
 import app.moshu.journal.data.media.ImageStorage
 import app.moshu.journal.data.settings.SettingsRepository
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.launch
 import org.json.JSONArray
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 /** reEnrich 的结果。调用方据此给出反馈，否则「重新整理」看起来像按了没反应。 */
 enum class ReEnrichResult { Enriched, NotConfigured, EmptyContent, AllManual }
+
+/**
+ * 一次可撤销的删除快照。附件文件在撤销窗口结束前不会被删，所以撤销能完整还原；
+ * 待办分两类：随记忆一起删掉的，以及只是被摘掉来源链接、本身仍在的。
+ */
+data class DeletedEntry(
+    val entry: EntryEntity,
+    val removedTodos: List<TodoEntity>,
+    val detachedTodos: List<TodoEntity>,
+    val attachments: List<AttachmentEntity>,
+)
 
 class JournalRepository(
     private val context: Context,
@@ -31,6 +50,14 @@ class JournalRepository(
     private val settings: SettingsRepository,
 ) {
     val pendingCount: Flow<Int> = db.entryDao().observePendingCount()
+
+    /**
+     * 延迟清理附件文件的后台作用域。进程被杀时这里挂起的任务会一起消失，
+     * 于是文件成为孤儿——MoShuApp 启动时会做一次孤儿清理收口。
+     */
+    private val purgeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val purgeJobs = ConcurrentHashMap<Long, Job>()
+    private val attachmentPurgeJobs = ConcurrentHashMap<Long, Job>()
 
     /**
      * 只订阅给定条目的附件。原先列表页直接 observeAll()，任何一张图片的增删都会
@@ -185,28 +212,98 @@ class JournalRepository(
         reEnrich(entryId)
     }
 
-    suspend fun deleteAttachment(attachmentId: Long, entryId: Long) {
-        val attachment = db.attachmentDao().forEntry(entryId).firstOrNull { it.id == attachmentId } ?: return
-        ImageStorage.delete(attachment)
-        db.attachmentDao().deleteById(attachmentId)
+    /** 复制一条记忆（不含图片）。返回新条目 id，用于跳转或提示。 */
+    suspend fun duplicateEntry(entryId: Long): Long? {
+        val entry = db.entryDao().byId(entryId) ?: return null
+        val config = settings.currentAiConfig()
+        val now = System.currentTimeMillis()
+        // 不复制图片：同一份文件被两个条目引用时，删任意一条都会让另一条变成破图。
+        val copy = entry.copy(
+            id = 0,
+            // uid 有唯一索引，副本必须换一个，否则插入直接失败。
+            uid = UUID.randomUUID().toString(),
+            createdAt = now,
+            updatedAt = now,
+            isPinned = false,
+            enriched = false,
+            aiState = if (config.valid && entry.content.isNotBlank()) EntryAiState.PENDING.value else EntryAiState.IDLE.value,
+            aiError = "",
+            aiModel = "",
+            aiPromptVersion = 0,
+        )
+        val id = db.entryDao().insert(copy)
+        if (config.valid && entry.content.isNotBlank()) EnrichmentWorker.enqueue(context, id)
+        return id
     }
 
-    suspend fun deleteEntry(entryId: Long) {
+    /**
+     * 可撤销删除：只删数据库行，附件文件延后到撤销窗口结束再删。
+     * 返回快照供 [restoreEntry] 使用。
+     */
+    suspend fun deleteEntry(entryId: Long): DeletedEntry? {
+        val entry = db.entryDao().byId(entryId) ?: return null
         val attachments = db.attachmentDao().forEntry(entryId)
+        val todos = db.todoDao().bySource(entryId)
+        val removed = todos.filterNot { it.isUserCreated || it.userEdited }
+        val detached = todos.filter { it.isUserCreated || it.userEdited }
         db.withTransaction {
-            // AI 提取且用户没动过的行动随记忆一起消失；用户自己建的或改过的留下，
+            // AI 提取且用户没动过的行动随记忆一起消失；用户自建或改过的留下，
             // 但必须摘掉 sourceEntryId，否则「来自记忆」会指向一条已删除的记录。
-            db.todoDao().bySource(entryId).forEach { todo ->
-                if (todo.isUserCreated || todo.userEdited) {
-                    db.todoDao().update(todo.copy(sourceEntryId = 0, updatedAt = System.currentTimeMillis()))
-                } else {
-                    db.todoDao().deleteById(todo.id)
-                }
-            }
+            detached.forEach { db.todoDao().update(it.copy(sourceEntryId = 0, updatedAt = System.currentTimeMillis())) }
+            removed.forEach { db.todoDao().deleteById(it.id) }
             db.entryDao().deleteById(entryId)
         }
-        // 文件删除放在事务提交之后：文件系统不参与事务，先删会让回滚后的数据库指向空文件。
-        attachments.forEach(ImageStorage::delete)
+        scheduleEntryPurge(entryId, attachments)
+        return DeletedEntry(entry, removed, detached, attachments)
+    }
+
+    /** 撤销删除。条目会用原来的 uid 重建，附件行与文件都还在，无需重新导入。 */
+    suspend fun restoreEntry(deleted: DeletedEntry): Long {
+        purgeJobs.remove(deleted.entry.id)?.cancel()
+        return db.withTransaction {
+            val newId = db.entryDao().insert(deleted.entry.copy(id = 0))
+            deleted.attachments.forEach { db.attachmentDao().insert(it.copy(id = 0, entryId = newId)) }
+            deleted.removedTodos.forEach { db.todoDao().insert(it.copy(id = 0, sourceEntryId = newId)) }
+            // 被摘掉来源链接的待办仍在表里，按 uid 找回并重新指向恢复后的条目。
+            deleted.detachedTodos.forEach { todo ->
+                db.todoDao().byUid(todo.uid)?.let {
+                    db.todoDao().update(it.copy(sourceEntryId = newId, updatedAt = System.currentTimeMillis()))
+                }
+            }
+            newId
+        }
+    }
+
+    suspend fun deleteAttachment(attachmentId: Long, entryId: Long): AttachmentEntity? {
+        val attachment = db.attachmentDao().forEntry(entryId).firstOrNull { it.id == attachmentId } ?: return null
+        db.attachmentDao().deleteById(attachmentId)
+        scheduleAttachmentPurge(attachment)
+        return attachment
+    }
+
+    suspend fun restoreAttachment(attachment: AttachmentEntity) {
+        attachmentPurgeJobs.remove(attachment.id)?.cancel()
+        db.attachmentDao().insert(attachment.copy(id = 0))
+    }
+
+    /** 撤销窗口：够用户看清提示并点一下，又不至于让磁盘文件长时间悬空。 */
+    private fun scheduleEntryPurge(entryId: Long, attachments: List<AttachmentEntity>) {
+        if (attachments.isEmpty()) return
+        purgeJobs.remove(entryId)?.cancel()
+        purgeJobs[entryId] = purgeScope.launch {
+            delay(UNDO_WINDOW_MS)
+            attachments.forEach(ImageStorage::delete)
+            purgeJobs.remove(entryId)
+        }
+    }
+
+    private fun scheduleAttachmentPurge(attachment: AttachmentEntity) {
+        attachmentPurgeJobs.remove(attachment.id)?.cancel()
+        attachmentPurgeJobs[attachment.id] = purgeScope.launch {
+            delay(UNDO_WINDOW_MS)
+            ImageStorage.delete(attachment)
+            attachmentPurgeJobs.remove(attachment.id)
+        }
     }
 
     private fun toFtsQuery(raw: String): String {
@@ -215,6 +312,9 @@ class JournalRepository(
     }
 
     companion object {
+        /** 删除后的撤销窗口。 */
+        const val UNDO_WINDOW_MS = 8_000L
+
         /** 中日韩字符判定。含这类字符的查询必须走 LIKE 子串匹配，FTS 的按词索引匹配不到句中词。 */
         fun containsCjk(value: String): Boolean = value.any { char ->
             val code = char.code

@@ -154,22 +154,24 @@ class EnrichmentWorker(context: Context, params: WorkerParameters) : CoroutineWo
         return Result.success()
     }
 
-    /** 整理失败汇总通知：多条失败只占一个通知槽，点按进「行动」页处理。 */
+    /** 整理失败汇总通知：多条失败只占一个通知槽，点按直接进「记忆」页的失败筛选。 */
     private suspend fun notifyFailures(context: Context, dao: EntryDao) {
         val count = runCatching { dao.countFailed() }.getOrNull() ?: return
         if (count <= 0) return
-        Notifications.ensureChannel(context)
+        Notifications.ensureAiChannel(context)
         val pending = PendingIntent.getActivity(
             context,
             FAILURE_NOTIFICATION_ID,
             Intent(context, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
-                putExtra("open_actions", true)
+                // 失败的条目在「记忆」页，不在「行动」页；带错 extra 会把用户送到一个
+                // 根本看不到失败记录的列表上。
+                putExtra(MainActivity.EXTRA_OPEN_AI_FAILURES, true)
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         val text = "$count 条记录的 AI 整理失败了，点按查看并重试。"
-        val notification = NotificationCompat.Builder(context, Notifications.CHANNEL_REMINDER)
+        val notification = NotificationCompat.Builder(context, Notifications.CHANNEL_AI)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("有些记录还没整理好")
             .setContentText(text)

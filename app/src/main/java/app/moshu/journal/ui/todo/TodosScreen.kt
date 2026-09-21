@@ -25,6 +25,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Send
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Link
@@ -138,7 +139,7 @@ fun TodosScreen(
             )
         }
 
-        val visibleEmpty = if (state.showCompleted) state.completed.isEmpty() else state.active.isEmpty()
+        val visibleEmpty = if (state.showCompleted) state.completed.isEmpty() else state.active.isEmpty() && state.suggested.isEmpty()
         if (state.loading) {
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
@@ -157,8 +158,29 @@ fun TodosScreen(
             ) {
                 if (state.showCompleted) {
                     item { MoShuSectionTitle("已完成") }
-                    items(state.completed, key = { it.id }) { TodoCard(it, viewModel::toggle, { editing = it }, { pendingDelete = it }, onOpenSource) }
+                    items(state.completed, key = { it.id }) { TodoCard(it, viewModel::toggle, { editing = it }, { pendingDelete = it }, onOpenSource, onRestore = { viewModel.restore(it) }) }
                 } else {
+                    // AI 建议先在这里等用户表态，采纳后才进正式列表。
+                    if (state.suggested.isNotEmpty()) {
+                        item {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                MoShuSectionTitle("AI 建议 · ${state.suggested.size}")
+                                Text(
+                                    "由 AI 从记录中提取，采纳后才会进入上面的行动列表。",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                        items(state.suggested, key = { "suggested-${it.id}" }) { todo ->
+                            SuggestedTodoCard(
+                                todo = todo,
+                                onAccept = { viewModel.acceptSuggested(todo) },
+                                onDismiss = { viewModel.dismissSuggested(todo) },
+                                onOpenSource = onOpenSource,
+                            )
+                        }
+                    }
                     todoSection("已逾期", overdue, true, viewModel, { editing = it }, { pendingDelete = it }, onOpenSource)
                     todoSection("今天", todayItems, false, viewModel, { editing = it }, { pendingDelete = it }, onOpenSource)
                     todoSection("以后", later, false, viewModel, { editing = it }, { pendingDelete = it }, onOpenSource)
@@ -216,8 +238,52 @@ private fun androidx.compose.foundation.lazy.LazyListScope.todoSection(
     items(values, key = { it.id }) { TodoCard(it, viewModel::toggle, { onEdit(it) }, onDelete, onOpenSource) }
 }
 
+/** AI 建议卡片：采纳/忽略两个动作，不计入正式列表与角标。 */
 @Composable
-private fun TodoCard(todo: TodoEntity, onToggle: (TodoEntity) -> Unit, onEdit: () -> Unit, onDelete: (TodoEntity) -> Unit, onOpenSource: (Long) -> Unit) {
+private fun SuggestedTodoCard(todo: TodoEntity, onAccept: () -> Unit, onDismiss: () -> Unit, onOpenSource: (Long) -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+    ) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Rounded.AutoAwesome, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.size(6.dp))
+                Text(todo.text, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (todo.sourceEntryId > 0) {
+                    Text(
+                        "来自记忆",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.secondary,
+                        modifier = Modifier
+                            .clickable(onClickLabel = "打开来源记忆") { onOpenSource(todo.sourceEntryId) }
+                            .heightIn(min = 48.dp)
+                            .wrapContentHeight(Alignment.CenterVertically)
+                            .padding(horizontal = 4.dp),
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = onAccept) { Text("采纳") }
+                TextButton(onClick = onDismiss) { Text("忽略", color = MaterialTheme.colorScheme.error) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TodoCard(
+    todo: TodoEntity,
+    onToggle: (TodoEntity) -> Unit,
+    onEdit: () -> Unit,
+    onDelete: (TodoEntity) -> Unit,
+    onOpenSource: (Long) -> Unit,
+    /** 已完成条目才传：退回进行中。 */
+    onRestore: (() -> Unit)? = null,
+) {
     val today = LocalDate.now().toEpochDay().toInt()
     Card(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onEdit),
@@ -249,6 +315,9 @@ private fun TodoCard(todo: TodoEntity, onToggle: (TodoEntity) -> Unit, onEdit: (
                         )
                     }
                 }
+            }
+            if (todo.done && onRestore != null) {
+                TextButton(onClick = onRestore) { Text("恢复") }
             }
             IconButton(onClick = { onDelete(todo) }) { Icon(Icons.Rounded.DeleteOutline, "删除", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
         }

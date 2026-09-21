@@ -70,6 +70,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.moshu.journal.data.db.AiReviewEntity
 import app.moshu.journal.data.db.Category
+import app.moshu.journal.ui.components.MoShuConfirmDialog
 import app.moshu.journal.ui.components.MoShuEmptyState
 import app.moshu.journal.ui.components.MoShuPageHeader
 import app.moshu.journal.ui.components.MoShuSectionTitle
@@ -89,6 +90,7 @@ fun InsightsScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
+    var confirmClearChat by remember { mutableStateOf(false) }
     // 消息项之前固定有 4 个卡片/标题，外加加载态与空状态两项可能占位。
     val headerItems = 4 + (if (state.loading) 1 else 0) + (if (!state.loading && state.entryCount == 0) 1 else 0)
     // 只在消息数增长时滚到最后一条；原先监听 asking 会在回答还没生成时就跳走。
@@ -164,7 +166,15 @@ fun InsightsScreen(
             item { ReviewCard(state, viewModel, onSettings) }
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                    MoShuSectionTitle("问墨枢")
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        MoShuSectionTitle("问墨枢", modifier = Modifier.weight(1f))
+                        // 对话是持久化在本地的，必须给一个彻底的删除入口。
+                        if (state.messages.isNotEmpty()) {
+                            TextButton(onClick = { confirmClearChat = true }, modifier = Modifier.heightIn(min = 48.dp)) {
+                                Text("清空对话", color = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    }
                     // 对话是全局的，切换月份不会换一份记录，必须写清楚，否则用户会以为聊的是当前月。
                     Text(
                         "对话不受月份切换影响；提问和相关摘录会发送给你配置的 AI 服务商。",
@@ -205,6 +215,17 @@ fun InsightsScreen(
         }
         AskBar(viewModel::ask)
     }
+
+    if (confirmClearChat) {
+        MoShuConfirmDialog(
+            title = "清空全部对话？",
+            body = "本机保存的问答记录会被删除，此操作无法撤销。",
+            confirmLabel = "清空",
+            destructive = true,
+            onConfirm = viewModel::clearChat,
+            onDismiss = { confirmClearChat = false },
+        )
+    }
 }
 
 @Composable private fun Stat(label: String, value: String) { Column(horizontalAlignment = Alignment.CenterHorizontally) { Text(value, style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.secondary); Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
@@ -218,6 +239,17 @@ private fun ReviewCard(state: InsightsUiState, viewModel: InsightsViewModel, onS
                 Icon(Icons.Rounded.AutoAwesome, null, tint = MaterialTheme.colorScheme.primary)
                 Spacer(Modifier.size(8.dp))
                 Text("月度叙事", style = MaterialTheme.typography.titleMedium)
+                // 出处放在标题旁边：跟在按钮后面容易被长正文挤出可视区，
+                // 而且「谁在什么时候、依据多少条记录生成的」本来就该紧跟标题。
+                review?.let { saved ->
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        reviewStamp(saved),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.End,
+                    )
+                }
             }
             // 用户可以在本地改一句话，而不必为了一个错字整篇重生成；改动不落库。
             var editing by rememberSaveable(review?.periodKey) { mutableStateOf(false) }
@@ -241,11 +273,12 @@ private fun ReviewCard(state: InsightsUiState, viewModel: InsightsViewModel, onS
                 }
                 if (review != null || edited != null) {
                     IconButton(onClick = { clipboard.setText(AnnotatedString(shown)) }) { Icon(Icons.Rounded.ContentCopy, "复制回顾") }
-                    TextButton(onClick = { editing = !editing }) { Text(if (editing) "完成" else "编辑") }
+                    TextButton(onClick = {
+                        // 之前改动只留在内存里，切个月份就丢；现在落回同一条回顾记录。
+                        if (editing && edited != null) viewModel.saveReview(shown)
+                        editing = !editing
+                    }) { Text(if (editing) "保存修改" else "编辑") }
                 }
-            }
-            review?.let { saved ->
-                Text(reviewStamp(saved), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             if (state.reviewModelChanged) {
                 Text("（模型已变更，可重新生成）", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

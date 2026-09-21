@@ -1,11 +1,15 @@
 package app.moshu.journal.ui.components
 
+import android.content.Context
+import android.content.Intent
 import android.graphics.BitmapFactory
 import android.util.LruCache
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,14 +29,21 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.EditNote
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SearchOff
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -102,8 +113,8 @@ fun MoShuPageHeader(
 }
 
 @Composable
-fun MoShuSectionTitle(title: String, action: String? = null, onAction: (() -> Unit)? = null) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+fun MoShuSectionTitle(title: String, action: String? = null, onAction: (() -> Unit)? = null, modifier: Modifier = Modifier) {
+    Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(title, style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
         if (action != null && onAction != null) {
             // 用 TextButton 而不是裸 Text + clickable：后者只有约 36dp，够不到 48dp 的最小触控区。
@@ -142,6 +153,7 @@ fun MoShuEmptyState(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun EntryCard(
     entry: EntryEntity,
@@ -150,53 +162,138 @@ fun EntryCard(
     attachments: List<AttachmentEntity> = emptyList(),
     /** 整理失败时卡片内的重试入口；不传则只保留「整理失败」文案。 */
     onRetryAi: (() -> Unit)? = null,
+    /** 长按菜单的动作集合；为 null 时卡片只响应单击。 */
+    actions: EntryCardActions? = null,
 ) {
-    Card(
+    var menu by remember { mutableStateOf(false) }
+    val interactive = Modifier.combinedClickable(
         onClick = onClick,
-        modifier = modifier.fillMaxWidth().border(0.6.dp, MaterialTheme.colorScheme.outlineVariant, MaterialTheme.shapes.large),
-        shape = MaterialTheme.shapes.large,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp, pressedElevation = 0.dp),
-    ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(8.dp).background(CategoryColors.getOrElse(entry.categoryId) { CategoryColors[0] }, CircleShape))
-                Spacer(Modifier.width(7.dp))
-                Text(Category.nameOf(entry.categoryId), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (entry.isPinned) {
-                    Spacer(Modifier.width(8.dp))
-                    Icon(Icons.Rounded.PushPin, contentDescription = "已置顶", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary)
-                }
-                Spacer(Modifier.weight(1f))
-                Text(
-                    relativeTime(entry.createdAt),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            if (entry.summary.isNotBlank()) {
-                Text(entry.summary, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            }
-            if (entry.content.isNotBlank()) {
-                Text(entry.content, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.88f), maxLines = 4, overflow = TextOverflow.Ellipsis)
-            }
-            if (attachments.isNotEmpty()) EntryImageStrip(attachments.take(3))
-            val tags = parseTags(entry.tagsJson)
-            val mood = moodEmoji(entry.mood)
-            if (tags.isNotEmpty() || mood.isNotEmpty() || entry.aiState != EntryAiState.SUCCEEDED.value) {
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    tags.take(3).forEach { tag ->
-                        Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
-                            Text("#$tag", modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
-                        }
+        onLongClick = if (actions != null) ({ menu = true }) else null,
+        onLongClickLabel = if (actions != null) "更多操作" else null,
+    )
+    Box(modifier) {
+        Card(
+            modifier = Modifier.fillMaxWidth()
+                .border(0.6.dp, MaterialTheme.colorScheme.outlineVariant, MaterialTheme.shapes.large)
+                .then(interactive),
+            shape = MaterialTheme.shapes.large,
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp, pressedElevation = 0.dp),
+        ) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(8.dp).background(CategoryColors.getOrElse(entry.categoryId) { CategoryColors[0] }, CircleShape))
+                    Spacer(Modifier.width(7.dp))
+                    Text(Category.nameOf(entry.categoryId), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (entry.isPinned) {
+                        Spacer(Modifier.width(8.dp))
+                        Icon(Icons.Rounded.PushPin, contentDescription = "已置顶", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary)
                     }
                     Spacer(Modifier.weight(1f))
-                    AiStateLabel(entry.aiState, onOpen = onClick, onRetry = onRetryAi)
-                    if (mood.isNotEmpty()) Text(mood)
+                    Text(
+                        relativeTime(entry.createdAt),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (entry.summary.isNotBlank()) {
+                    Text(entry.summary, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
+                if (entry.content.isNotBlank()) {
+                    Text(entry.content, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 4, overflow = TextOverflow.Ellipsis)
+                }
+                if (attachments.isNotEmpty()) EntryImageStrip(attachments.take(3))
+                val tags = parseTags(entry.tagsJson)
+                val mood = moodEmoji(entry.mood)
+                if (tags.isNotEmpty() || mood.isNotEmpty() || entry.aiState != EntryAiState.SUCCEEDED.value) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        tags.take(3).forEach { tag ->
+                            Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+                                Text("#$tag", modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
+                            }
+                        }
+                        Spacer(Modifier.weight(1f))
+                        AiStateLabel(entry.aiState, onOpen = onClick, onRetry = onRetryAi)
+                        if (mood.isNotEmpty()) Text(mood)
+                    }
                 }
             }
         }
+        if (actions != null) {
+            EntryCardMenu(expanded = menu, entry = entry, actions = actions, onDismiss = { menu = false })
+        }
     }
+}
+
+/** 卡片长按菜单的动作。全部由调用方提供，卡片本身不持有任何数据访问逻辑。 */
+data class EntryCardActions(
+    val onEdit: () -> Unit,
+    val onDuplicate: () -> Unit,
+    val onTogglePin: () -> Unit,
+    val onShare: () -> Unit,
+    val onDelete: () -> Unit,
+    /** 整理失败时的重试；非失败条目为 null。 */
+    val onRetryAi: (() -> Unit)? = null,
+)
+
+@Composable
+private fun EntryCardMenu(expanded: Boolean, entry: EntryEntity, actions: EntryCardActions, onDismiss: () -> Unit) {
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        DropdownMenuItem(text = { Text("编辑") }, leadingIcon = { Icon(Icons.Rounded.Edit, null) }, onClick = { onDismiss(); actions.onEdit() })
+        DropdownMenuItem(text = { Text("复制一条") }, leadingIcon = { Icon(Icons.Rounded.ContentCopy, null) }, onClick = { onDismiss(); actions.onDuplicate() })
+        DropdownMenuItem(
+            text = { Text(if (entry.isPinned) "取消置顶" else "置顶") },
+            leadingIcon = { Icon(Icons.Rounded.PushPin, null) },
+            onClick = { onDismiss(); actions.onTogglePin() },
+        )
+        actions.onRetryAi?.let { retry ->
+            DropdownMenuItem(text = { Text("重新整理") }, leadingIcon = { Icon(Icons.Rounded.Refresh, null) }, onClick = { onDismiss(); retry() })
+        }
+        DropdownMenuItem(text = { Text("分享") }, leadingIcon = { Icon(Icons.Rounded.Share, null) }, onClick = { onDismiss(); actions.onShare() })
+        DropdownMenuItem(
+            text = { Text("删除", color = MaterialTheme.colorScheme.error) },
+            leadingIcon = { Icon(Icons.Rounded.DeleteOutline, null, tint = MaterialTheme.colorScheme.error) },
+            onClick = { onDismiss(); actions.onDelete() },
+        )
+    }
+}
+
+/** 用系统分享面板把一条记忆发出去。只拼文本，不涉及图片或密钥。 */
+fun shareEntryText(entry: EntryEntity): String = buildString {
+    if (entry.summary.isNotBlank()) appendLine(entry.summary)
+    append(entry.content)
+    val tags = parseTags(entry.tagsJson)
+    if (tags.isNotEmpty()) appendLine().append(tags.joinToString(" ") { "#$it" })
+}
+
+fun shareEntry(context: Context, entry: EntryEntity) {
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_TEXT, shareEntryText(entry))
+    }
+    runCatching { context.startActivity(Intent.createChooser(intent, "分享这条记忆")) }
+}
+
+@Composable
+fun MoShuConfirmDialog(
+    title: String,
+    body: String,
+    confirmLabel: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+    destructive: Boolean = false,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = { Text(body) },
+        confirmButton = {
+            TextButton(onClick = { onDismiss(); onConfirm() }) {
+                Text(confirmLabel, color = if (destructive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
 }
 
 @Composable
