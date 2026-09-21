@@ -62,6 +62,19 @@ data class WritingStats(
     val firstAt: Long? = null,
 )
 
+/** 一个标签与它最常伴随的情绪。[ratio] 越高说明这个标签的情绪越一致。 */
+data class MoodTagLink(
+    val tag: String,
+    val mood: String,
+    val moodCount: Int,
+    val total: Int,
+) {
+    val ratio: Float get() = if (total == 0) 0f else moodCount.toFloat() / total
+}
+
+/** 情绪-标签关联至少需要多少条记录才值得展示。 */
+private const val MOOD_TAG_MIN_ENTRIES = 3
+
 class JournalRepository(
     private val context: Context,
     private val db: AppDatabase,
@@ -431,6 +444,30 @@ class JournalRepository(
             busiestHour = hourHistogram.maxByOrNull { it.value }?.key,
             firstAt = entries.minOfOrNull { it.createdAt },
         )
+    }
+
+    /**
+     * 情绪与标签的关联：每个标签下出现最多的情绪，以及该标签的条目数。
+     *
+     * 只统计出现次数足够多的标签：两三条记录得出的「关联」是噪音，
+     * 展示出来反而误导用户。
+     */
+    suspend fun moodTagCorrelation(minEntries: Int = MOOD_TAG_MIN_ENTRIES, limit: Int = 6): List<MoodTagLink> {
+        val entries = db.entryDao().allOnce().filter { it.mood.isNotBlank() }
+        val byTag = mutableMapOf<String, MutableList<String>>()
+        entries.forEach { entry ->
+            parseTags(entry.tagsJson).forEach { tag ->
+                byTag.getOrPut(tag) { mutableListOf() }.add(entry.mood)
+            }
+        }
+        return byTag.entries
+            .filter { it.value.size >= minEntries }
+            .map { (tag, moods) ->
+                val dominant = moods.groupingBy { it }.eachCount().maxByOrNull { it.value }!!
+                MoodTagLink(tag, dominant.key, dominant.value, moods.size)
+            }
+            .sortedByDescending { it.moodCount.toFloat() / it.total }
+            .take(limit)
     }
 
     /** 最长连续写作天数。按自然日排序后扫一遍，跨天不连续就重新计数。 */

@@ -109,6 +109,9 @@ fun MoShuTheme(
     val dark = when (themeMode) {
         "light" -> false
         "dark" -> true
+        // 「按时间」用本地小时粗算（19:00–7:00 为夜间）。精确日出日落需要定位权限，
+        // 为了换个主题去要位置不合理。
+        "auto" -> java.time.LocalTime.now().let { it.hour >= 19 || it.hour < 7 }
         else -> isSystemInDarkTheme()
     }
     val context = LocalContext.current

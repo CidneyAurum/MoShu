@@ -18,6 +18,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import app.moshu.journal.data.MoodTagLink
 import app.moshu.journal.data.WritingStats
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -221,6 +222,12 @@ class InsightsViewModel : ViewModel() {
         .map { app.journal.writingStats() }
         .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** 情绪与标签的关联，同样挂在 stats 后面跟着数据变化重算。 */
+    val moodTags: StateFlow<List<MoodTagLink>> = stats
+        .map { app.journal.moodTagCorrelation() }
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val uiState: StateFlow<InsightsUiState> = combine(
         stats,

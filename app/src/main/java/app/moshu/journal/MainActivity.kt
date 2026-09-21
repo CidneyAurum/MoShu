@@ -130,6 +130,9 @@ class MainActivity : ComponentActivity() {
             val dark = when (themeMode) {
                 "dark" -> true
                 "light" -> false
+                // 「按时间」用本地小时粗算：19:00–7:00 视为夜间。
+                // 精确到日出日落需要定位权限，为换主题索要位置不合理。
+                "auto" -> java.time.LocalTime.now().let { it.hour >= 19 || it.hour < 7 }
                 else -> isSystemInDarkTheme()
             }
             // 系统栏图标必须跟随应用内主题，而不是系统主题：强制深色时若图标仍是深色，

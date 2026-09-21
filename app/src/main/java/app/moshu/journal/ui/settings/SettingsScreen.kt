@@ -157,7 +157,13 @@ fun SettingsScreen(
             SettingsCard("外观", Icons.Rounded.Palette) {
                 Text("主题", style = MaterialTheme.typography.bodyMedium)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("system" to "跟随系统", "light" to "浅色", "dark" to "深色").forEach { (mode, label) ->
+                    // 「按时间」是本地粗算（19:00–7:00 视为夜间），不引入定位权限。
+                    listOf(
+                        "system" to "跟随系统",
+                        "light" to "浅色",
+                        "dark" to "深色",
+                        "auto" to "按时间",
+                    ).forEach { (mode, label) ->
                         FilterChip(state.themeMode == mode, { viewModel.setTheme(mode) }, { Text(label) })
                     }
                 }

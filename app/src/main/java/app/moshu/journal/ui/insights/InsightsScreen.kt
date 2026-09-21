@@ -70,12 +70,14 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.moshu.journal.data.db.AiReviewEntity
+import app.moshu.journal.data.MoodTagLink
 import app.moshu.journal.data.WritingStats
 import app.moshu.journal.data.db.Category
 import app.moshu.journal.ui.components.MoShuConfirmDialog
 import app.moshu.journal.ui.components.MoShuEmptyState
 import app.moshu.journal.ui.components.MoShuPageHeader
 import app.moshu.journal.ui.components.MoShuSectionTitle
+import app.moshu.journal.ui.components.moodLabel
 import app.moshu.journal.ui.theme.AzureBlue
 import app.moshu.journal.ui.theme.CategoryColors
 import java.text.SimpleDateFormat
@@ -92,6 +94,7 @@ fun InsightsScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val writingStats by viewModel.writingStats.collectAsStateWithLifecycle()
+    val moodTags by viewModel.moodTags.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
     var confirmClearChat by remember { mutableStateOf(false) }
     // 消息项之前固定有 4 个卡片/标题，外加加载态与空状态两项可能占位。
@@ -157,6 +160,9 @@ fun InsightsScreen(
             }
             item {
                 WritingStatsCard(writingStats)
+            }
+            if (moodTags.isNotEmpty()) {
+                item { MoodTagCard(moodTags) }
             }
             item {
                 Card(shape = MaterialTheme.shapes.large, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
@@ -274,6 +280,40 @@ private fun WritingStatsCard(stats: WritingStats?) {
 /** 万字以上换算成「x.x万」，否则直接给数字。 */
 private fun formatCount(value: Int): String =
     if (value >= 10_000) "%.1f万".format(Locale.CHINA, value / 10_000.0) else "$value"
+
+/**
+ * 情绪与标签的关联卡。
+ *
+ * 只展示记录数够多的标签（见仓库层阈值）：两三条记录得出的「关联」是噪音。
+ */
+@Composable
+private fun MoodTagCard(links: List<MoodTagLink>) {
+    Card(shape = MaterialTheme.shapes.large, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            MoShuSectionTitle("情绪与标签")
+            Text(
+                "某个标签反复伴随同一种情绪时，这里会显示出来。样本太少的不列。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            links.forEach { link ->
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("#${link.tag}", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                    Text(
+                        "${moodLabel(link.mood)} · ${(link.ratio * 100).toInt()}%",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.secondary,
+                    )
+                    Text(
+                        "  (${link.moodCount}/${link.total})",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
 
 @Composable
 private fun ReviewCard(state: InsightsUiState, viewModel: InsightsViewModel, onSettings: () -> Unit) {
