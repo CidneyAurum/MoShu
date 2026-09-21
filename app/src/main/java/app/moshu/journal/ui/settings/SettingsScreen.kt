@@ -29,8 +29,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Archive
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.MenuBook
 import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -74,9 +77,12 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.moshu.journal.BuildConfig
+import app.moshu.journal.ai.Hosts
 import app.moshu.journal.ai.UrlNormalizer
 import app.moshu.journal.reminder.Notifications
 import app.moshu.journal.reminder.ReminderScheduler
+import app.moshu.journal.ui.components.MessageSeverity
+import app.moshu.journal.ui.components.MoShuMessageBar
 import app.moshu.journal.ui.components.MoShuPageHeader
 import java.util.Locale
 import kotlinx.coroutines.launch
@@ -84,7 +90,13 @@ import java.time.LocalDate
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit, modifier: Modifier = Modifier) {
+fun SettingsScreen(
+    viewModel: SettingsViewModel,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+    /** 重新查看使用引导。引导页本身是可返回的，不影响 onboardingDone。 */
+    onOpenOnboarding: () -> Unit = {},
+) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -92,6 +104,7 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit, modifier: M
     var showTimePicker by remember { mutableStateOf(false) }
     var showSoundDialog by remember { mutableStateOf(false) }
     var showKey by remember { mutableStateOf(false) }
+    var modelFilter by remember { mutableStateOf("") }
     var restoreUri by remember { mutableStateOf<Uri?>(null) }
     var replaceUri by remember { mutableStateOf<Uri?>(null) }
     val apiKeyFocus = remember { FocusRequester() }
@@ -144,6 +157,15 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit, modifier: M
                         FilterChip(state.themeMode == mode, { viewModel.setTheme(mode) }, { Text(label) })
                     }
                 }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("跟随壁纸取色", style = MaterialTheme.typography.bodyMedium)
+                            Text("用系统壁纸的主色替换品牌配色。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(state.dynamicColor, viewModel::setDynamicColor)
+                    }
+                }
             }
         }
         item {
@@ -162,6 +184,9 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit, modifier: M
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                if (state.usage.totalCalls > 0) {
+                    TextButton(onClick = viewModel::resetUsage) { Text("重置统计") }
+                }
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(state.templates) { template ->
                         val applied = state.baseUrl.trim() == template.url && state.model.trim() == template.model
@@ -193,8 +218,28 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit, modifier: M
                 }
                 if (state.discoveredModels.isNotEmpty()) {
                     // 模型名拼错是 BYOK 最常见的失败原因，能点选就不要手打。
+                    val shown = state.discoveredModels.filter { it.contains(modelFilter, ignoreCase = true) }
+                    OutlinedTextField(
+                        value = modelFilter,
+                        onValueChange = { modelFilter = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("筛选模型") },
+                        placeholder = { Text("例如 flash") },
+                        singleLine = true,
+                        trailingIcon = {
+                            if (modelFilter.isNotBlank()) {
+                                IconButton(onClick = { modelFilter = "" }) { Icon(Icons.Rounded.Close, "清空筛选") }
+                            }
+                        },
+                    )
+                    Text(
+                        // 之前只展示前 40 个，靠后的模型永远点不到；现在给出真实数量。
+                        "共 ${state.discoveredModels.size} 个，显示 ${shown.size} 个",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        state.discoveredModels.take(40).forEach { id ->
+                        shown.take(60).forEach { id ->
                             FilterChip(state.model.trim() == id, { viewModel.selectModel(id) }, { Text(id) })
                         }
                     }
@@ -291,7 +336,7 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit, modifier: M
                     }
                     OutlinedButton(onClick = viewModel::testConnection, enabled = !state.testing) { Text(if (state.testing) "测试中…" else "测试连接") }
                 }
-                if (state.message.isNotBlank()) Text(state.message, style = MaterialTheme.typography.bodySmall, color = if (state.messageOk) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error)
+                if (state.message.isNotBlank()) MoShuMessageBar(state.message, severity = if (state.messageOk) MessageSeverity.INFO else MessageSeverity.ERROR)
             }
         }
         item {
@@ -305,6 +350,14 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit, modifier: M
                 }
                 OutlinedButton(onClick = { showTimePicker = true }, enabled = state.reminderEnabled, modifier = Modifier.fillMaxWidth()) {
                     Text("提醒时间  %02d:%02d".format(Locale.CHINA, state.reminderHour, state.reminderMinute))
+                }
+                if (state.reminderEnabled) {
+                    // 只显示「21:30」看不出下一次到底什么时候响。
+                    Text(
+                        nextReminderLabel(state.reminderHour, state.reminderMinute),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.secondary,
+                    )
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
@@ -336,6 +389,40 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit, modifier: M
                 ) { Icon(Icons.Rounded.Upload, null); Spacer(Modifier.size(8.dp)); Text("恢复备份") }
                 if (state.dataBusy) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
                 if (state.dataMessage.isNotBlank()) Text(state.dataMessage, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+            }
+        }
+        item {
+            SettingsCard("关于与隐私", Icons.Rounded.Lock) {
+                Text("数据存在哪里", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "正文、图片、行动与回顾都保存在本机应用私有目录，没有墨枢账号，也没有墨枢服务器。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text("AI 会发送什么", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "开启 AI 后：整理会发送记录正文；问墨枢会发送你的问题与命中的摘录；每日提醒会发送近 7 天摘录；" +
+                        "图片默认不发送，需在「AI 服务」里单独开启。除此之外不会上传任何内容。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text("密钥怎么保存", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "API Key 用 Android Keystore 的 AES/GCM 加密后存在本机，导出备份绝不包含密钥。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text("如何彻底删除", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "逐条删除记忆，或在「数据」里用清空并恢复的方式重建；卸载应用会一并清除本机全部数据。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedButton(onClick = onOpenOnboarding, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Rounded.MenuBook, null)
+                    Spacer(Modifier.size(8.dp))
+                    Text("查看使用引导")
+                }
             }
         }
         item {
@@ -512,12 +599,19 @@ private fun SettingsCard(title: String, icon: androidx.compose.ui.graphics.vecto
 }
 
 /** 展示用主机名；没写协议的地址也尽量解析，解析不出就原样显示。 */
-private fun hostOf(url: String): String {
-    val value = url.trim()
-    if (value.isBlank()) return "未填写"
-    return runCatching { java.net.URI(if (value.contains("://")) value else "https://$value").host }
-        .getOrNull()?.takeIf { it.isNotBlank() }
-        ?: value.trimEnd('/')
+private fun hostOf(url: String): String = Hosts.of(url).ifBlank { "未填写" }
+
+/** 「下次提醒」文案：给出具体的星期与时刻，而不是只显示一个时间设置值。 */
+private fun nextReminderLabel(hour: Int, minute: Int): String {
+    val zone = java.time.ZoneId.systemDefault()
+    val at = java.time.Instant.ofEpochMilli(ReminderScheduler.nextTriggerTime(hour, minute)).atZone(zone)
+    val today = java.time.LocalDate.now(zone)
+    val day = when (at.toLocalDate()) {
+        today -> "今天"
+        today.plusDays(1) -> "明天"
+        else -> at.format(java.time.format.DateTimeFormatter.ofPattern("M月d日", Locale.CHINA))
+    }
+    return "下次提醒：$day %02d:%02d".format(Locale.CHINA, at.hour, at.minute)
 }
 
 /** 密钥只显示首尾各 4 位；已保存但不在输入框里的密钥不还原明文。 */

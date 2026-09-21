@@ -48,6 +48,8 @@ class SettingsRepository(context: Context) {
         // ""=系统默认 "silent"=静音 其他=内容 Uri 字符串
         val REMINDER_SOUND = stringPreferencesKey("reminder_sound")
         val THEME_MODE = stringPreferencesKey("theme_mode")
+        /** 跟随壁纸取色（Material You）。 */
+        val DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color")
         val ONBOARDING_DONE = booleanPreferencesKey("onboarding_done")
         // 每天一行 "YYYY-MM-DD": [调用次数, token 数]
         val AI_USAGE_DAILY = stringPreferencesKey("ai_usage_daily")
@@ -241,6 +243,24 @@ class SettingsRepository(context: Context) {
     suspend fun saveThemeMode(mode: String) {
         val safe = mode.takeIf { it in setOf("system", "light", "dark") } ?: "system"
         appContext.dataStore.edit { it[Keys.THEME_MODE] = safe }
+    }
+
+    val dynamicColor: Flow<Boolean> = appContext.dataStore.data.map { it[Keys.DYNAMIC_COLOR] ?: false }
+
+    suspend fun saveDynamicColor(enabled: Boolean) {
+        appContext.dataStore.edit { it[Keys.DYNAMIC_COLOR] = enabled }
+    }
+
+    /**
+     * 清零 AI 用量统计。换服务商或换密钥后旧统计会一直混在新数据里，
+     * 用户需要一个明确的重新开始入口。
+     */
+    suspend fun resetAiUsage() {
+        appContext.dataStore.edit { prefs ->
+            prefs[Keys.AI_USAGE_DAILY] = ""
+            prefs[Keys.AI_USAGE_TOTAL_CALLS] = 0L
+            prefs[Keys.AI_USAGE_TOTAL_TOKENS] = 0L
+        }
     }
 
     val onboardingDone: Flow<Boolean> = appContext.dataStore.data.map { it[Keys.ONBOARDING_DONE] ?: false }

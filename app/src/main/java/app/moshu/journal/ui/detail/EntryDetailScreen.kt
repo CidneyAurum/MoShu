@@ -57,6 +57,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
@@ -79,6 +80,23 @@ import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Date
 import java.util.Locale
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.rounded.StarOutline
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.ui.text.style.TextOverflow
+import app.moshu.journal.ai.Hosts
+import app.moshu.journal.ui.components.MessageSeverity
+import app.moshu.journal.ui.components.MoShuMessageBar
+import app.moshu.journal.ui.components.rememberCopyText
+import app.moshu.journal.ui.components.THUMBNAIL_TARGET_PX
+import app.moshu.journal.ui.components.shareEntry
+import app.moshu.journal.ui.theme.OnScrim
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -91,6 +109,7 @@ fun EntryDetailScreen(
     val entry = state.entry
     // 只读已保存的 AI 配置，用于说明「这条正文被发给了谁」。
     val aiConfig by remember { MoShuApp.instance.settings.aiConfig }.collectAsStateWithLifecycle(AiConfig())
+    val context = LocalContext.current
     val aiTodos = state.todos.filter { it.isAiSuggested }
     val linkedTodos = state.todos.filter { !it.isAiSuggested }
     var editing by remember { mutableStateOf(false) }
@@ -145,6 +164,7 @@ fun EntryDetailScreen(
             onBack = { if (editing && editorDirty) confirmDiscard = true else onBack() },
             actions = {
                 if (!editing) {
+                    IconButton(onClick = { shareEntry(context, entry) }) { Icon(Icons.Rounded.Share, "分享") }
                     IconButton(onClick = viewModel::togglePinned) {
                         Icon(Icons.Rounded.PushPin, "置顶", tint = if (entry.isPinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                     }
@@ -170,6 +190,7 @@ fun EntryDetailScreen(
                     picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                 },
                 onDeleteImage = viewModel::deleteImage,
+                onSetCover = viewModel::setCover,
                 onRestoreAi = viewModel::clearManualMetadata,
             )
         } else {
@@ -179,10 +200,34 @@ fun EntryDetailScreen(
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 if (state.attachments.isNotEmpty()) {
-                    item { EntryImageStrip(state.attachments.take(3), onClick = { selectedImage = it }) }
+                    item { EntryImageStrip(state.attachments.take(3), targetPx = DETAIL_IMAGE_PX, onClick = { selectedImage = it }) }
                 }
                 if (entry.summary.isNotBlank()) item { Text(entry.summary, style = MaterialTheme.typography.headlineMedium) }
-                if (entry.content.isNotBlank()) item { Text(entry.content, style = MaterialTheme.typography.bodyLarge) }
+                if (entry.content.isNotBlank()) {
+                    item {
+                        // 长文折叠：整段正文作为单个 Text 会让首屏与滚动都很重。
+                        var expanded by remember(entry.id) { mutableStateOf(false) }
+                        val long = entry.content.length > LONG_TEXT_CHARS
+                        val clipboard = rememberCopyText()
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            // 正文可选中复制：以前只有回顾页能选中，详情页只能整条分享。
+                            SelectionContainer {
+                                Text(
+                                    entry.content,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    maxLines = if (expanded || !long) Int.MAX_VALUE else COLLAPSED_LINES,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (long) {
+                                    TextButton(onClick = { expanded = !expanded }) { Text(if (expanded) "收起" else "展开全文") }
+                                }
+                                TextButton(onClick = { clipboard(entry.content) }) { Text("复制全文") }
+                            }
+                        }
+                    }
+                }
                 item {
                     // 标签是用户/AI 生成的，长度不可控，普通 Row 会静默裁掉尾部。
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -259,6 +304,10 @@ fun EntryDetailScreen(
                                             color = if (!todo.done && due < LocalDate.now().toEpochDay().toInt()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                                         )
                                     }
+                                    // 删除关联行动不必跑到「行动」页；删除可撤销。
+                                    IconButton(onClick = { viewModel.deleteTodo(todo) }) {
+                                        Icon(Icons.Rounded.DeleteOutline, "删除行动", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+                                    }
                                 }
                             }
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -315,26 +364,39 @@ fun EntryDetailScreen(
                         Text("删除这条记忆", color = MaterialTheme.colorScheme.error)
                     }
                 }
-                if (state.message.isNotBlank()) item { Text(state.message, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                if (state.message.isNotBlank()) {
+                    item { MoShuMessageBar(state.message, severity = if (state.messageError) MessageSeverity.ERROR else MessageSeverity.INFO) }
+                }
             }
         }
     }
 
     selectedImage?.let { image ->
         val index = state.attachments.indexOfFirst { it.id == image.id }
+        // 多图条目要能左右滑动翻页；只给一个「3 / 5」文字等于让用户退出去再点下一张。
+        val pagerState = rememberPagerState(initialPage = index.coerceAtLeast(0)) { state.attachments.size }
         Dialog(onDismissRequest = { selectedImage = null }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-            Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
-                LocalImage(image.localPath, Modifier.fillMaxSize(), ContentScale.Fit)
-                if (index >= 0 && state.attachments.size > 1) {
-                    Text(
-                        "${index + 1} / ${state.attachments.size}",
-                        color = Color.White,
-                        style = MaterialTheme.typography.labelLarge,
-                        modifier = Modifier.align(Alignment.TopStart).padding(24.dp).background(Color.Black.copy(alpha = 0.5f), CircleShape).padding(horizontal = 12.dp, vertical = 6.dp),
+            Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim), contentAlignment = Alignment.Center) {
+                HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
+                    val attachment = state.attachments.getOrNull(page) ?: return@HorizontalPager
+                    LocalImage(
+                        attachment.localPath,
+                        Modifier.fillMaxSize(),
+                        ContentScale.Fit,
+                        contentDescription = "第 ${page + 1} 张，共 ${state.attachments.size} 张",
+                        targetPx = FULL_IMAGE_PX,
                     )
                 }
-                IconButton(onClick = { selectedImage = null }, modifier = Modifier.align(Alignment.TopEnd).padding(20.dp).background(Color.Black.copy(alpha = 0.5f), CircleShape)) {
-                    Icon(Icons.Rounded.Close, "关闭", tint = Color.White)
+                if (state.attachments.size > 1) {
+                    Text(
+                        "${pagerState.currentPage + 1} / ${state.attachments.size}",
+                        color = OnScrim,
+                        style = MaterialTheme.typography.labelLarge,
+                        modifier = Modifier.align(Alignment.TopStart).padding(24.dp).background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.5f), CircleShape).padding(horizontal = 12.dp, vertical = 6.dp),
+                    )
+                }
+                IconButton(onClick = { selectedImage = null }, modifier = Modifier.align(Alignment.TopEnd).padding(20.dp).background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.5f), CircleShape)) {
+                    Icon(Icons.Rounded.Close, "关闭", tint = OnScrim)
                 }
             }
         }
@@ -365,7 +427,7 @@ fun EntryDetailScreen(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
 private fun EntryEditor(
     entry: app.moshu.journal.data.db.EntryEntity,
@@ -377,6 +439,7 @@ private fun EntryEditor(
     onSave: (String, Int, List<String>, String, String) -> Unit,
     onAddImages: () -> Unit,
     onDeleteImage: (Long) -> Unit,
+    onSetCover: (Long) -> Unit,
     onRestoreAi: (Int) -> Unit,
 ) {
     var content by remember(entry.id) { mutableStateOf(entry.content) }
@@ -421,8 +484,9 @@ private fun EntryEditor(
                 // 取前 4 张会让剩下的图片在编辑态里既看不到也删不掉。
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(attachments, key = { it.id }) { image ->
+                        var menu by remember(image.id) { mutableStateOf(false) }
                         Box(Modifier.size(68.dp).clip(RoundedCornerShape(12.dp))) {
-                            LocalImage(image.localPath, Modifier.fillMaxSize())
+                            LocalImage(image.localPath, Modifier.fillMaxSize(), targetPx = THUMBNAIL_TARGET_PX)
                             // 触控区至少 48dp：原来只有 22dp，既难点中又容易误触，
                             // 而且删图片会立刻删磁盘文件，所以补一层确认。
                             Box(
@@ -436,6 +500,33 @@ private fun EntryEditor(
                                 ) {
                                     Icon(Icons.Rounded.Close, "删除图片", Modifier.size(16.dp))
                                 }
+                            }
+                            // 长按图片可以设封面：sortOrder 决定列表缩略图与详情首图。
+                            Box(
+                                modifier = Modifier.matchParentSize()
+                                    .combinedClickable(onClick = {}, onLongClickLabel = "图片操作", onLongClick = { menu = true }),
+                                contentAlignment = Alignment.BottomStart,
+                            ) {
+                                if (attachments.firstOrNull()?.id == image.id) {
+                                    Text(
+                                        "封面",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = OnScrim,
+                                        modifier = Modifier.padding(4.dp).background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.55f), RoundedCornerShape(6.dp)).padding(horizontal = 6.dp, vertical = 2.dp),
+                                    )
+                                }
+                            }
+                            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                                DropdownMenuItem(
+                                    text = { Text("设为封面") },
+                                    leadingIcon = { Icon(Icons.Rounded.StarOutline, null) },
+                                    onClick = { menu = false; onSetCover(image.id) },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("删除这张图片", color = MaterialTheme.colorScheme.error) },
+                                    leadingIcon = { Icon(Icons.Rounded.DeleteOutline, null, tint = MaterialTheme.colorScheme.error) },
+                                    onClick = { menu = false; pendingImageDelete = image.id },
+                                )
                             }
                         }
                     }
@@ -499,10 +590,12 @@ private fun moodLabel(value: String): String = when (value) { "great" -> "✨ �
 private fun aiTitle(state: String): String = when (EntryAiState.from(state)) { EntryAiState.PENDING -> "等待 AI 整理"; EntryAiState.RUNNING -> "AI 正在整理"; EntryAiState.FAILED -> "这次没有整理成功"; EntryAiState.IDLE -> "尚未启用 AI 整理"; EntryAiState.SUCCEEDED -> "已整理" }
 
 /** 展示用服务商主机名；没写协议的地址也尽量解析。 */
-private fun providerHost(url: String): String {
-    val value = url.trim()
-    if (value.isBlank()) return "你配置的服务商"
-    return runCatching { java.net.URI(if (value.contains("://")) value else "https://$value").host }
-        .getOrNull()?.takeIf { it.isNotBlank() }
-        ?: value.trimEnd('/')
-}
+private fun providerHost(url: String): String = Hosts.of(url).ifBlank { "你配置的服务商" }
+
+/** 长文折叠阈值与折叠行数。 */
+private const val LONG_TEXT_CHARS = 300
+private const val COLLAPSED_LINES = 12
+
+/** 列表缩略图 320px 足够；详情条带与全屏大图才需要更高分辨率。 */
+private const val DETAIL_IMAGE_PX = 720
+private const val FULL_IMAGE_PX = 1600

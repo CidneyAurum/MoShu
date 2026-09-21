@@ -256,6 +256,9 @@ class InsightsViewModel : ViewModel() {
     fun prevMonth() { if (monthOffset.value < 24) monthOffset.value += 1 }
     fun nextMonth() { if (monthOffset.value > 0) monthOffset.value -= 1 }
 
+    /** 一次回到当月。往回翻几个月后只能一格格点回来，这个入口必须有。 */
+    fun currentMonth() { monthOffset.value = 0 }
+
     /**
      * 提问。返回 false 表示这次输入没有被受理（空文本或上一问还在进行），
      * 界面据此保留输入框内容而不是把它清空。

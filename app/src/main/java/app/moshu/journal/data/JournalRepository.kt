@@ -286,6 +286,22 @@ class JournalRepository(
         db.attachmentDao().insert(attachment.copy(id = 0))
     }
 
+    /**
+     * 把某张图片设为封面（排到最前）。列表缩略图与详情首图都按 sortOrder 取，
+     * 因此只需回写这一组顺序即可，不需要额外的「封面」字段。
+     */
+    suspend fun moveAttachmentToFront(attachmentId: Long, entryId: Long) {
+        val all = db.attachmentDao().forEntry(entryId)
+        val target = all.firstOrNull { it.id == attachmentId } ?: return
+        if (all.firstOrNull()?.id == target.id) return
+        val reordered = listOf(target) + all.filterNot { it.id == target.id }
+        db.withTransaction {
+            reordered.forEachIndexed { index, attachment ->
+                if (attachment.sortOrder != index) db.attachmentDao().update(attachment.copy(sortOrder = index))
+            }
+        }
+    }
+
     /** 撤销窗口：够用户看清提示并点一下，又不至于让磁盘文件长时间悬空。 */
     private fun scheduleEntryPurge(entryId: Long, attachments: List<AttachmentEntity>) {
         if (attachments.isEmpty()) return

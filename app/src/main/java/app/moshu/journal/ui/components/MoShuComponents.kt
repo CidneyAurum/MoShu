@@ -33,7 +33,9 @@ import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.EditNote
+import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.Image
+import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SearchOff
@@ -53,13 +55,13 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -72,9 +74,14 @@ import app.moshu.journal.data.db.Category
 import app.moshu.journal.data.db.EntryAiState
 import app.moshu.journal.data.db.EntryEntity
 import app.moshu.journal.ui.theme.CategoryColors
+import app.moshu.journal.ui.theme.OnScrim
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
+import android.content.ClipData
+import androidx.compose.ui.platform.ClipEntry
+import androidx.compose.ui.platform.LocalClipboardManager
+import app.moshu.journal.ui.LocalMoShuApp
 
 @Composable
 fun MoShuPageHeader(
@@ -121,6 +128,51 @@ fun MoShuSectionTitle(title: String, action: String? = null, onAction: (() -> Un
             TextButton(onClick = onAction, modifier = Modifier.heightIn(min = 48.dp)) {
                 Text(action, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
             }
+        }
+    }
+}
+
+/** 提示条的严重程度，决定配色与图标。 */
+enum class MessageSeverity { INFO, WARN, ERROR }
+
+/**
+ * 页面内提示条。此前同一类「保存失败」在四个页面各写一遍 Text，
+ * 颜色与位置都不同（有的红、有的灰），用户难以判断严重程度。
+ */
+@Composable
+fun MoShuMessageBar(text: String, modifier: Modifier = Modifier, severity: MessageSeverity = MessageSeverity.INFO) {
+    if (text.isBlank()) return
+    val container = when (severity) {
+        MessageSeverity.ERROR -> MaterialTheme.colorScheme.errorContainer
+        MessageSeverity.WARN -> MaterialTheme.colorScheme.tertiaryContainer
+        MessageSeverity.INFO -> MaterialTheme.colorScheme.surfaceVariant
+    }
+    val content = when (severity) {
+        MessageSeverity.ERROR -> MaterialTheme.colorScheme.onErrorContainer
+        MessageSeverity.WARN -> MaterialTheme.colorScheme.onTertiaryContainer
+        MessageSeverity.INFO -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Surface(modifier = modifier.fillMaxWidth(), shape = MaterialTheme.shapes.medium, color = container) {
+        Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.Top) {
+            Icon(
+                if (severity == MessageSeverity.ERROR) Icons.Rounded.ErrorOutline else Icons.Rounded.Info,
+                contentDescription = null,
+                modifier = Modifier.size(17.dp),
+                tint = content,
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(text, style = MaterialTheme.typography.bodySmall, color = content)
+        }
+    }
+}
+
+/** 统计小卡：今天页与回顾页共用同一套观感。 */
+@Composable
+fun MoShuStatCard(label: String, value: String, modifier: Modifier = Modifier) {
+    Surface(modifier = modifier, shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surface) {
+        Column(Modifier.padding(14.dp)) {
+            Text(value, style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.secondary)
+            Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -300,6 +352,8 @@ fun MoShuConfirmDialog(
 fun EntryImageStrip(
     attachments: List<AttachmentEntity>,
     modifier: Modifier = Modifier,
+    /** 解码目标边长。列表缩略图只需 ~320px，详情页才需要更高分辨率。 */
+    targetPx: Int = THUMBNAIL_TARGET_PX,
     onClick: ((AttachmentEntity) -> Unit)? = null,
 ) {
     val shape = RoundedCornerShape(12.dp)
@@ -317,14 +371,15 @@ fun EntryImageStrip(
                     attachment.localPath,
                     Modifier.matchParentSize(),
                     contentDescription = "记忆图片 ${index + 1}，共 ${attachments.size} 张",
+                    targetPx = targetPx,
                 )
                 // 多于三张时给出提示，否则 6 张的条目看起来和 3 张的一模一样。
                 if (extra > 0 && index == shown.lastIndex) {
                     Box(
-                        Modifier.matchParentSize().background(Color.Black.copy(alpha = 0.45f)),
+                        Modifier.matchParentSize().background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.45f)),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Text("+$extra", color = Color.White, style = MaterialTheme.typography.titleMedium)
+                        Text("+$extra", color = OnScrim, style = MaterialTheme.typography.titleMedium)
                     }
                 }
             }
@@ -352,9 +407,12 @@ fun LocalImage(
     modifier: Modifier = Modifier,
     contentScale: ContentScale = ContentScale.Crop,
     contentDescription: String? = null,
+    /** 解码目标边长。列表缩略图传 320，详情与大图再提高，避免为 62dp 的格子解码 720px。 */
+    targetPx: Int = 720,
 ) {
-    var bitmap by remember(path) { mutableStateOf(imageCache.get(path)) }
-    LaunchedEffect(path) {
+    var attempt by remember(path) { mutableIntStateOf(0) }
+    var bitmap by remember(path, attempt) { mutableStateOf(if (attempt == 0) imageCache.get(path) else null) }
+    LaunchedEffect(path, attempt) {
         if (bitmap != null) return@LaunchedEffect
         val loaded = withContext(Dispatchers.IO) {
             runCatching {
@@ -363,7 +421,7 @@ fun LocalImage(
                 if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@runCatching null
                 // 按显示尺寸下采样，避免列表中解码全尺寸原图造成卡顿与内存压力
                 var sample = 1
-                while (bounds.outWidth / (sample * 2) >= 720 && bounds.outHeight / (sample * 2) >= 720) sample *= 2
+                while (bounds.outWidth / (sample * 2) >= targetPx && bounds.outHeight / (sample * 2) >= targetPx) sample *= 2
                 BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })?.asImageBitmap()
             }.getOrNull()
         }
@@ -374,7 +432,12 @@ fun LocalImage(
     if (current != null) {
         Image(bitmap = current, contentDescription = contentDescription, modifier = modifier, contentScale = contentScale)
     } else {
-        Box(modifier.background(MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) {
+        // 解码失败（文件被系统清理、内存不足）时给一次重试机会，而不是永久占位。
+        Box(
+            modifier.background(MaterialTheme.colorScheme.surfaceVariant)
+                .clickable(onClickLabel = "重新加载图片") { attempt++ },
+            contentAlignment = Alignment.Center,
+        ) {
             Icon(Icons.Rounded.Image, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
@@ -407,7 +470,8 @@ private fun AiStateLabel(state: String, onOpen: () -> Unit, onRetry: (() -> Unit
             },
         )
         if (failed && onRetry != null) {
-            IconButton(onClick = onRetry, modifier = Modifier.size(32.dp)) {
+            // 容器补到 48dp 最小触控区，图标本身保持 16dp。
+            IconButton(onClick = onRetry, modifier = Modifier.size(48.dp)) {
                 Icon(
                     Icons.Rounded.Refresh,
                     contentDescription = "重新整理",
@@ -424,13 +488,24 @@ fun parseTags(tagsJson: String): List<String> = runCatching {
     (0 until array.length()).map { array.getString(it) }
 }.getOrDefault(emptyList())
 
-fun moodEmoji(mood: String): String = when (mood) {
-    "great" -> "✨"
-    "good" -> "🙂"
-    "neutral" -> "😌"
-    "low" -> "😕"
-    "bad" -> "😞"
-    else -> ""
+/** 列表缩略图的解码目标边长。 */
+const val THUMBNAIL_TARGET_PX = 320
+
+/**
+ * 复制文本到系统剪贴板并给出反馈。
+ * 走 `setClip(ClipEntry)` 而不是已废弃的 `setText(AnnotatedString)`。
+ */
+@Composable
+fun rememberCopyText(): (String) -> Unit {
+    val clipboard = LocalClipboardManager.current
+    val app = LocalMoShuApp.current
+    return { text ->
+        runCatching {
+            clipboard.setClip(ClipEntry(ClipData.newPlainText("墨枢", text)))
+            app.notices.post("已复制")
+        }
+        Unit
+    }
 }
 
 private fun relativeTime(timestamp: Long): String {

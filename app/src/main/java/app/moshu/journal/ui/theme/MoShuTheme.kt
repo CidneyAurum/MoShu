@@ -5,14 +5,21 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.shape.RoundedCornerShape
+import android.os.Build
+import androidx.compose.runtime.CompositionLocalProvider
+import app.moshu.journal.MoShuApp
+import app.moshu.journal.ui.LocalMoShuApp
 
 val InkBlack = Color(0xFF111214)
 val InkSurface = Color(0xFF1A1B1E)
@@ -24,6 +31,12 @@ val Vermilion = Color(0xFFC95447)
 val PineGreen = Color(0xFF638673)
 val AzureBlue = Color(0xFF6585A8)
 val AmberGold = Color(0xFFB8883D)
+
+/**
+ * 遮罩上的内容色。图片遮罩与全屏看图在深浅两套配色下都是深底，
+ * 用 onSurface 之类会随主题翻转的语义色会让深色模式下的文字看不清。
+ */
+val OnScrim = Color(0xFFF7F5F0)
 
 val CategoryColors = listOf(PineGreen, AzureBlue, AmberGold)
 
@@ -87,16 +100,31 @@ private val MoShuShapes = Shapes(
 )
 
 @Composable
-fun MoShuTheme(themeMode: String = "system", content: @Composable () -> Unit) {
+fun MoShuTheme(
+    themeMode: String = "system",
+    /** 跟随壁纸取色（Material You）。默认关闭以保留品牌配色，仅 Android 12+ 生效。 */
+    dynamicColor: Boolean = false,
+    content: @Composable () -> Unit,
+) {
     val dark = when (themeMode) {
         "light" -> false
         "dark" -> true
         else -> isSystemInDarkTheme()
     }
+    val context = LocalContext.current
+    val scheme = if (dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+    } else {
+        if (dark) DarkScheme else LightScheme
+    }
     MaterialTheme(
-        colorScheme = if (dark) DarkScheme else LightScheme,
+        colorScheme = scheme,
         typography = MoShuTypography,
         shapes = MoShuShapes,
-        content = content,
-    )
+    ) {
+        // 统一在这里注入应用依赖，页面不再各自去读单例。
+        CompositionLocalProvider(LocalMoShuApp provides MoShuApp.instance) {
+            content()
+        }
+    }
 }

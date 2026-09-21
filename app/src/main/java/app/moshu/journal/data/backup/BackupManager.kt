@@ -85,9 +85,19 @@ object BackupManager {
             ?: error("无法创建导出文件")
     }
 
-    suspend fun restore(context: Context, db: AppDatabase, uri: Uri, replace: Boolean): RestoreResult = withContext(Dispatchers.IO) {
+    /**
+     * 从备份恢复。[onProgress] 会在各阶段被调用：大备份下只转一个圈会让人以为卡死。
+     */
+    suspend fun restore(
+        context: Context,
+        db: AppDatabase,
+        uri: Uri,
+        replace: Boolean,
+        onProgress: (String) -> Unit = {},
+    ): RestoreResult = withContext(Dispatchers.IO) {
         val temp = File.createTempFile("moshu_restore_", ".zip", context.cacheDir)
         try {
+            onProgress("正在读取备份文件…")
             // 先把归档落到缓存目录，但必须有上限：异常大的文件会先把缓存分区写满。
             context.contentResolver.openInputStream(uri)?.use { input ->
                 temp.outputStream().use { output ->
@@ -102,6 +112,7 @@ object BackupManager {
                     }
                 }
             } ?: error("无法读取备份文件")
+            onProgress("正在校验备份内容…")
             ZipFile(temp).use { zip ->
                 val manifest = JSONObject(zip.readText("manifest.json"))
                 require(manifest.optInt("format") == 1) { "不支持的备份版本" }
@@ -129,6 +140,7 @@ object BackupManager {
                         }
 
                         val uidToId = db.entryDao().allOnce().associate { it.uid to it.id }.toMutableMap()
+                        onProgress("正在恢复记忆…")
                         for (index in 0 until entriesJson.length()) {
                             val item = entriesJson.getJSONObject(index)
                             val uid = item.optString("uid").ifBlank { UUID.randomUUID().toString() }
@@ -150,8 +162,10 @@ object BackupManager {
                         }
 
                         val dir = File(context.filesDir, "attachments").apply { mkdirs() }
+                        val totalImages = attachmentsJson.length()
                         for (index in 0 until attachmentsJson.length()) {
                             val item = attachmentsJson.getJSONObject(index)
+                            onProgress("正在恢复图片 ${index + 1}/$totalImages…")
                             val uid = item.optString("uid").ifBlank { UUID.randomUUID().toString() }
                             if (db.attachmentDao().byUid(uid) != null) continue
                             val entryId = uidToId[item.optString("entryUid")]

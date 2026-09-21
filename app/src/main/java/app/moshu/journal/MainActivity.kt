@@ -106,11 +106,16 @@ class MainActivity : ComponentActivity() {
         setContent {
             val app = MoShuApp.instance
             val startupFlow = remember(app) {
-                combine(app.settings.themeMode, app.settings.onboardingDone) { theme, done -> theme to done }
+                combine(
+                    app.settings.themeMode,
+                    app.settings.onboardingDone,
+                    app.settings.dynamicColor,
+                ) { theme, done, dynamic -> Triple(theme, done, dynamic) }
             }
             val startup by startupFlow.collectAsStateWithLifecycle(initialValue = null)
             val scope = rememberCoroutineScope()
             val themeMode = startup?.first ?: "system"
+            val dynamicColor = startup?.third ?: false
             val dark = when (themeMode) {
                 "dark" -> true
                 "light" -> false
@@ -124,7 +129,7 @@ class MainActivity : ComponentActivity() {
                     isAppearanceLightNavigationBars = !dark
                 }
             }
-            MoShuTheme(themeMode) {
+            MoShuTheme(themeMode, dynamicColor) {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     when {
                         startup?.second == true -> MoShuRoot(
@@ -192,6 +197,7 @@ private object Routes {
     const val ACTIONS = "actions"
     const val REVIEW = "review"
     const val SETTINGS = "settings"
+    const val ONBOARDING = "onboarding"
     const val ENTRY = "entry/{entryId}"
     fun entry(id: Long) = "entry/$id"
 }
@@ -360,7 +366,21 @@ private fun AppNavHost(
                 )
             }
             composable(Routes.SETTINGS) {
-                SettingsScreen(viewModel<SettingsViewModel>(), onBack = { navController.popBackStack() })
+                SettingsScreen(
+                    viewModel<SettingsViewModel>(),
+                    onBack = { navController.popBackStack() },
+                    // 引导页可以随时重看，返回即回到设置，不会重置 onboardingDone。
+                    onOpenOnboarding = { navController.navigate(Routes.ONBOARDING) },
+                )
+            }
+            composable(Routes.ONBOARDING) {
+                OnboardingScreen(
+                    onComplete = { navController.popBackStack() },
+                    onConfigureAi = {
+                        navController.popBackStack()
+                        navController.navigate(Routes.SETTINGS)
+                    },
+                )
             }
             composable(
                 route = Routes.ENTRY,

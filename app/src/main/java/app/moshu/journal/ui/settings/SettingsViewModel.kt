@@ -7,6 +7,7 @@ import app.moshu.journal.MoShuApp
 import app.moshu.journal.ai.AiClient
 import app.moshu.journal.ai.AiConfig
 import app.moshu.journal.ai.Enricher
+import app.moshu.journal.ai.Hosts
 import app.moshu.journal.data.backup.BackupManager
 import app.moshu.journal.data.settings.AiUsage
 import app.moshu.journal.reminder.TodoReminderWorker
@@ -49,6 +50,7 @@ data class SettingsUiState(
     val reminderMinute: Int = 30,
     val reminderSound: String = "",
     val themeMode: String = "system",
+    val dynamicColor: Boolean = false,
     val dataBusy: Boolean = false,
     val dataMessage: String = "",
 )
@@ -86,12 +88,12 @@ class SettingsViewModel : ViewModel() {
     )
 
     private data class Core(val draft: Draft, val saving: Boolean, val testing: Boolean, val message: Pair<String, Boolean>)
-    private data class Peripheral(val enabled: Boolean, val hour: Int, val minute: Int, val sound: String, val theme: String)
+    private data class Peripheral(val enabled: Boolean, val hour: Int, val minute: Int, val sound: String, val theme: String, val dynamic: Boolean)
     private data class DataState(val busy: Boolean, val message: String)
 
     private val core = combine(draft, saving, testing, message) { d, s, t, m -> Core(d, s, t, m) }
-    private val peripheral = combine(settings.reminderEnabled, settings.reminderTime, settings.reminderSound, settings.themeMode) { enabled, time, sound, theme ->
-        Peripheral(enabled, time.first, time.second, sound, theme)
+    private val peripheral = combine(settings.reminderEnabled, settings.reminderTime, settings.reminderSound, settings.themeMode, settings.dynamicColor) { enabled, time, sound, theme, dynamic ->
+        Peripheral(enabled, time.first, time.second, sound, theme, dynamic)
     }
     private val dataState = combine(dataBusy, dataMessage) { busy, note -> DataState(busy, note) }
 
@@ -123,6 +125,7 @@ class SettingsViewModel : ViewModel() {
             reminderMinute = p.minute,
             reminderSound = p.sound,
             themeMode = p.theme,
+            dynamicColor = p.dynamic,
             dataBusy = data.busy,
             dataMessage = data.message,
         )
@@ -353,23 +356,26 @@ class SettingsViewModel : ViewModel() {
         }
     }
 
-    /** 取主机名用于展示与「地址是否变更」判断；没写协议的地址也尽量解析。 */
-    private fun hostOf(url: String): String {
-        val value = url.trim()
-        if (value.isBlank()) return ""
-        return runCatching { java.net.URI(if (value.contains("://")) value else "https://$value").host }
-            .getOrNull()?.takeIf { it.isNotBlank() }
-            ?: value.trimEnd('/').lowercase()
-    }
+    /** 取主机名用于展示与「地址是否变更」判断。 */
+    private fun hostOf(url: String): String = Hosts.of(url)
 
     fun setTheme(mode: String) { viewModelScope.launch { settings.saveThemeMode(mode) } }
+    fun setDynamicColor(enabled: Boolean) { viewModelScope.launch { settings.saveDynamicColor(enabled) } }
     fun setReminder(enabled: Boolean, hour: Int, minute: Int) { viewModelScope.launch { settings.saveReminder(enabled, hour, minute) } }
     fun saveReminderSound(mode: String) { viewModelScope.launch { settings.saveReminderSound(mode) } }
+
+    /** 清零用量统计；换服务商后旧数据会一直混着，需要明确的重新开始入口。 */
+    fun resetUsage() {
+        viewModelScope.launch {
+            settings.resetAiUsage()
+            setMessage("已重置本机 AI 用量统计", true)
+        }
+    }
 
     fun exportBackup(uri: Uri) = runDataTask("备份已导出；文件未加密，请妥善保管") { BackupManager.exportBackup(app, app.database, uri) }
     fun exportMarkdown(uri: Uri) = runDataTask("Markdown 已导出") { BackupManager.exportMarkdown(app, app.database, uri) }
     fun restore(uri: Uri, replace: Boolean) = runDataTask("") {
-        val result = BackupManager.restore(app, app.database, uri, replace)
+        val result = BackupManager.restore(app, app.database, uri, replace) { stage -> dataMessage.value = stage }
         app.database.todoDao().allOnce().filter { !it.done && it.reminderAt != null }.forEach { TodoReminderWorker.schedule(app, it) }
         dataMessage.value = buildString {
             append("恢复完成：${result.entries} 条记忆、${result.todos} 个行动、${result.images} 张图片")
