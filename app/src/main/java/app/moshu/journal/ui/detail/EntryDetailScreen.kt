@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.rounded.AddPhotoAlternate
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Edit
@@ -61,6 +62,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.moshu.journal.MoShuApp
+import app.moshu.journal.ai.AiConfig
 import app.moshu.journal.data.db.AttachmentEntity
 import app.moshu.journal.data.db.Category
 import app.moshu.journal.data.db.EntryAiState
@@ -84,6 +87,10 @@ fun EntryDetailScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val entry = state.entry
+    // 只读已保存的 AI 配置，用于说明「这条正文被发给了谁」。
+    val aiConfig by remember { MoShuApp.instance.settings.aiConfig }.collectAsStateWithLifecycle(AiConfig())
+    val aiTodos = state.todos.filter { it.isAiSuggested }
+    val linkedTodos = state.todos.filter { !it.isAiSuggested }
     var editing by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
     var selectedImage by remember { mutableStateOf<AttachmentEntity?>(null) }
@@ -134,11 +141,21 @@ fun EntryDetailScreen(
             },
         )
         if (editing) {
-            EntryEditor(entry, state.attachments, state.busy, onCancel = { editing = false }, onSave = { content, category, tags, mood, summary ->
-                viewModel.save(content, category, tags, mood, summary) { editing = false }
-            }, onAddImages = {
-                picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-            }, onDeleteImage = viewModel::deleteImage)
+            EntryEditor(
+                entry = entry,
+                attachments = state.attachments,
+                busy = state.busy,
+                message = state.message,
+                onCancel = { editing = false },
+                onSave = { content, category, tags, mood, summary ->
+                    viewModel.save(content, category, tags, mood, summary) { editing = false }
+                },
+                onAddImages = {
+                    picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                },
+                onDeleteImage = viewModel::deleteImage,
+                onRestoreAi = viewModel::clearManualMetadata,
+            )
         } else {
             LazyColumn(
                 modifier = Modifier.weight(1f),
@@ -164,6 +181,14 @@ fun EntryDetailScreen(
                             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Text(aiTitle(entry.aiState), style = MaterialTheme.typography.titleMedium)
                                 Text(entry.aiError.ifBlank { "连接 AI 后，墨枢会补全概括、标签、情绪和行动项。" }, style = MaterialTheme.typography.bodySmall)
+                                // 说清楚这条正文到底有没有离开设备、发给了谁。
+                                if (entry.aiState != EntryAiState.IDLE.value) {
+                                    Text(
+                                        "正文已发送至 ${providerHost(aiConfig.baseUrl)} 整理 · ${entry.aiModel.ifBlank { aiConfig.model }}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
                                 OutlinedButton(onClick = viewModel::retryAi) {
                                     Icon(Icons.Rounded.Refresh, null)
                                     Spacer(Modifier.size(6.dp))
@@ -181,11 +206,11 @@ fun EntryDetailScreen(
                                 Spacer(Modifier.size(8.dp))
                                 Text("关联行动", style = MaterialTheme.typography.titleMedium)
                                 Spacer(Modifier.weight(1f))
-                                if (state.todos.isNotEmpty()) {
-                                    Text("${state.todos.count { !it.done }}/${state.todos.size} 进行中", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                if (linkedTodos.isNotEmpty()) {
+                                    Text("${linkedTodos.count { !it.done }}/${linkedTodos.size} 进行中", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                             }
-                            state.todos.forEach { todo ->
+                            linkedTodos.forEach { todo ->
                                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                                     Checkbox(checked = todo.done, onCheckedChange = { viewModel.toggleTodo(todo) })
                                     Text(
@@ -218,6 +243,34 @@ fun EntryDetailScreen(
                                     enabled = todoDraft.isNotBlank(),
                                 ) {
                                     Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, "添加行动", tint = MaterialTheme.colorScheme.primary)
+                                }
+                            }
+                        }
+                    }
+                }
+                if (aiTodos.isNotEmpty()) {
+                    item {
+                        // AI 提取的行动先在这里等用户表态，不再无声无息地混进「行动」。
+                        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
+                            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Rounded.AutoAwesome, null, tint = MaterialTheme.colorScheme.primary)
+                                    Spacer(Modifier.size(8.dp))
+                                    Text("AI 建议的行动", style = MaterialTheme.typography.titleMedium)
+                                }
+                                Text(
+                                    "这些行动由 AI 从正文中提取，采纳后才会进入「行动」。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                aiTodos.forEach { todo ->
+                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                                        Text(todo.text, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                                        TextButton(onClick = { viewModel.acceptAiTodo(todo) }) { Text("采纳") }
+                                        TextButton(onClick = { viewModel.dismissAiTodo(todo) }) {
+                                            Text("忽略", color = MaterialTheme.colorScheme.error)
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -272,10 +325,12 @@ private fun EntryEditor(
     entry: app.moshu.journal.data.db.EntryEntity,
     attachments: List<AttachmentEntity>,
     busy: Boolean,
+    message: String,
     onCancel: () -> Unit,
     onSave: (String, Int, List<String>, String, String) -> Unit,
     onAddImages: () -> Unit,
     onDeleteImage: (Long) -> Unit,
+    onRestoreAi: (Int) -> Unit,
 ) {
     var content by remember(entry.id) { mutableStateOf(entry.content) }
     var summary by remember(entry.id) { mutableStateOf(entry.summary) }
@@ -339,6 +394,18 @@ private fun EntryEditor(
                 Text("添加图片")
             }
         }
+        if (entry.manualMetadataMask != 0) {
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        "概括、标签、分类或情绪中有你手动改过的项，AI 不会再覆盖它们。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    TextButton(onClick = { onRestoreAi(entry.manualMetadataMask) }) { Text("恢复 AI 管理") }
+                }
+            }
+        }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                 OutlinedButton(onClick = onCancel, modifier = Modifier.weight(1f)) { Text("取消") }
@@ -348,6 +415,9 @@ private fun EntryEditor(
                     modifier = Modifier.weight(1f),
                 ) { Text("保存") }
             }
+        }
+        if (message.isNotBlank()) {
+            item { Text(message, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         }
     }
 
@@ -372,3 +442,12 @@ private fun InfoPill(text: String) {
 private fun splitTags(raw: String): List<String> = raw.split(',', '，', '#').map { it.trim() }.filter { it.isNotBlank() }.distinct().take(6)
 private fun moodLabel(value: String): String = when (value) { "great" -> "✨ 很好"; "good" -> "🙂 不错"; "neutral" -> "😌 平静"; "low" -> "😕 低落"; "bad" -> "😞 难过"; else -> value }
 private fun aiTitle(state: String): String = when (EntryAiState.from(state)) { EntryAiState.PENDING -> "等待 AI 整理"; EntryAiState.RUNNING -> "AI 正在整理"; EntryAiState.FAILED -> "这次没有整理成功"; EntryAiState.IDLE -> "尚未启用 AI 整理"; EntryAiState.SUCCEEDED -> "已整理" }
+
+/** 展示用服务商主机名；没写协议的地址也尽量解析。 */
+private fun providerHost(url: String): String {
+    val value = url.trim()
+    if (value.isBlank()) return "你配置的服务商"
+    return runCatching { java.net.URI(if (value.contains("://")) value else "https://$value").host }
+        .getOrNull()?.takeIf { it.isNotBlank() }
+        ?: value.trimEnd('/')
+}

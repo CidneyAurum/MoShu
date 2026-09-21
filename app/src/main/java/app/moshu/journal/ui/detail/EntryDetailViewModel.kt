@@ -5,6 +5,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.moshu.journal.MoShuApp
+import app.moshu.journal.data.ReEnrichResult
 import app.moshu.journal.data.db.AttachmentEntity
 import app.moshu.journal.data.db.EntryEntity
 import app.moshu.journal.data.db.TodoEntity
@@ -100,7 +101,45 @@ class EntryDetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel() {
     }
 
     fun retryAi() {
-        viewModelScope.launch { app.journal.reEnrich(entryId) }
+        viewModelScope.launch {
+            // 结果必须落成可见提示：以前无论成功、未配置还是正文为空都静默返回，
+            // 用户点「重新整理」看不出任何变化。
+            message.value = when (app.journal.reEnrich(entryId)) {
+                ReEnrichResult.Enriched -> "已提交整理"
+                ReEnrichResult.NotConfigured -> "尚未配置 AI 服务，请到设置页填写"
+                ReEnrichResult.EmptyContent -> "正文为空，无法整理"
+                ReEnrichResult.AllManual -> "概括、标签等已由你手动设置，仅重新提取行动项"
+            }
+        }
+    }
+
+    /** 恢复 AI 管理：清除人工标记位后立即重新整理，让 AI 重新接管这些字段。 */
+    fun clearManualMetadata(mask: Int) {
+        viewModelScope.launch {
+            val entry = app.database.entryDao().byId(entryId) ?: return@launch
+            app.journal.clearManualMetadata(entry, mask)
+            message.value = when (app.journal.reEnrich(entryId)) {
+                ReEnrichResult.Enriched, ReEnrichResult.AllManual -> "已恢复 AI 管理，正在重新整理"
+                ReEnrichResult.NotConfigured -> "已恢复 AI 管理；配置 AI 服务后会重新整理"
+                ReEnrichResult.EmptyContent -> "已恢复 AI 管理"
+            }
+        }
+    }
+
+    /** 采纳 AI 建议的行动。 */
+    fun acceptAiTodo(todo: TodoEntity) {
+        viewModelScope.launch {
+            app.journal.acceptAiTodo(todo)
+            message.value = "已采纳为行动"
+        }
+    }
+
+    /** 忽略 AI 建议的行动。 */
+    fun dismissAiTodo(todo: TodoEntity) {
+        viewModelScope.launch {
+            app.journal.dismissAiTodo(todo)
+            message.value = "已忽略这条建议"
+        }
     }
 
     fun addImages(uris: List<Uri>) {

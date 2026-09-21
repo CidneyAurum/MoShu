@@ -26,6 +26,9 @@ data class EntryEntity(
     @ColumnInfo(defaultValue = "'idle'") val aiState: String = EntryAiState.IDLE.value,
     @ColumnInfo(defaultValue = "''") val aiError: String = "",
     @ColumnInfo(defaultValue = "0") val manualMetadataMask: Int = 0,
+    // 产出这份元数据的模型与提示词版本；改进提示词后据此找出需要重做的条目
+    @ColumnInfo(defaultValue = "''") val aiModel: String = "",
+    @ColumnInfo(defaultValue = "0") val aiPromptVersion: Int = 0,
 )
 
 object ManualMetadata {

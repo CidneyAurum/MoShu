@@ -2,10 +2,12 @@ package app.moshu.journal
 
 import app.moshu.journal.ai.AiClient
 import app.moshu.journal.ai.AiConfig
+import app.moshu.journal.ai.AskEngine
 import app.moshu.journal.ai.Enricher
 import app.moshu.journal.ai.UrlNormalizer
 import app.moshu.journal.data.db.Category
 import kotlinx.coroutines.runBlocking
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -52,6 +54,70 @@ class AiLiveSmokeTest {
     @Test
     fun `地址归一化拼出 chat completions 端点`() {
         assertEquals("$baseUrl/chat/completions", UrlNormalizer.requestUrl(baseUrl))
+    }
+
+    @Test
+    fun `真实网关接受 json 模式与长度上限`() = runBlocking {
+        val result = AiClient.complete(
+            config(),
+            "你是 JSON 生成器。只输出 JSON，不要解释。",
+            """把这句话转成 JSON：{"ok":true,"note":"今天加班到十点"} 的形状""",
+            temperature = 0.0,
+            maxTokens = 200,
+            jsonMode = true,
+        )
+        assertTrue("期望成功，实际：$result", result is AiClient.Result.Ok)
+        val text = (result as AiClient.Result.Ok).text.trim()
+        // json 模式生效时返回的应当就是可直接解析的 JSON（而不是被 markdown 包裹的散文）。
+        assertTrue("返回内容不是 JSON：${text.take(120)}", text.startsWith("{"))
+        // 能解析出来才算 json 模式真的生效。
+        JSONObject(text)
+        Unit
+    }
+
+    @Test
+    fun `用量字段被解析出来`() = runBlocking {
+        val result = AiClient.complete(config(), "你是测试助手。", "只回复两个字：可用")
+        assertTrue(result is AiClient.Result.Ok)
+        val ok = result as AiClient.Result.Ok
+        // 服务端返回 usage 时必须解析出来，否则设置页的「本月约 X 次调用 · Y tokens」是假的。
+        assertTrue("未解析出输入 tokens", ok.promptTokens > 0)
+        assertTrue("未解析出输出 tokens", ok.completionTokens > 0)
+    }
+
+    @Test
+    fun `模型列表可以从接口读取`() = runBlocking {
+        when (val models = AiClient.listModels(config())) {
+            is AiClient.ModelsResult.Ok -> {
+                assertTrue("模型列表为空", models.models.isNotEmpty())
+                // 注意：接口接受别名，但 /models 列出的是规范 id
+                // （配置 deepseek-v4-flash，列表里是 deepseek-v4-flash-0731）。
+                // 所以「列表里没有配置的模型名」不能当作配置错误——设置页也不该这样提示。
+                val related = models.models.any { it == model || it.startsWith("$model-") || model.startsWith("$it-") }
+                assertTrue(
+                    "列表里既没有 $model 也没有它的规范 id：${models.models.take(5)}",
+                    related,
+                )
+            }
+            is AiClient.ModelsResult.Fail -> throw AssertionError("读取模型列表失败：${models.message}")
+        }
+    }
+
+    @Test
+    fun `带编号摘录的提问只引用真实存在的编号`() = runBlocking {
+        // 引用必须可核对：模型只能引用提示里给出的编号，否则界面会挂出假来源。
+        val excerpts = listOf(
+            "8月20日：和产品组确认了新版本排期，下周三前完成登录模块重构。",
+            "8月22日：周五前补上接口文档。",
+        )
+        val numbered = excerpts.mapIndexed { i, body -> "[${i + 1}] $body" }.joinToString("\n")
+        val prompt = "【日记摘录】\n$numbered\n\n【问题】排期是怎么定的？"
+        val result = AiClient.complete(config(), AskEngine.SYSTEM_PROMPT, prompt, temperature = 0.3, maxTokens = 400)
+        assertTrue("请求失败：$result", result is AiClient.Result.Ok)
+        val text = (result as AiClient.Result.Ok).text
+        assertTrue("回答为空", text.isNotBlank())
+        val cited = AskEngine.citedIndices(text)
+        assertTrue("引用了不存在的编号：$cited", cited.all { it in 1..excerpts.size })
     }
 
     @Test

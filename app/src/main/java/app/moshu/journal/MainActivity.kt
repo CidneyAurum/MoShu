@@ -34,6 +34,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
@@ -50,6 +51,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import app.moshu.journal.data.imports.TextImport
 import app.moshu.journal.ui.detail.EntryDetailScreen
 import app.moshu.journal.ui.detail.EntryDetailViewModel
 import app.moshu.journal.ui.insights.InsightsScreen
@@ -71,6 +73,16 @@ class MainActivity : ComponentActivity() {
     /** 递增的请求令牌：从待办通知进来时 +1，用令牌而不是布尔值做 key，
      *  这样连续点第二条通知也能重新导航（布尔值第二次不会变化，看起来像没反应）。 */
     private val actionsRequest = mutableIntStateOf(0)
+    /** 引导页请求跳转到设置页（配置 AI）时的令牌。 */
+    private val settingsRequest = mutableIntStateOf(0)
+    /** 分享进来时请求跳回「今天」的令牌。 */
+    private val todayRequest = mutableIntStateOf(0)
+
+    /**
+     * 从外部分享进来的文字（ACTION_SEND / PROCESS_TEXT）。
+     * 只作为「今天」输入框的预填内容，不直接入库——用户应当有机会先改再存。
+     */
+    private val sharedDraft = mutableStateOf("")
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -79,6 +91,7 @@ class MainActivity : ComponentActivity() {
         if (savedInstanceState == null && intent.getBooleanExtra(EXTRA_OPEN_ACTIONS, false)) {
             actionsRequest.intValue = 1
         }
+        if (savedInstanceState == null) consumeSharedText(intent)
         enableEdgeToEdge()
         setContent {
             val app = MoShuApp.instance
@@ -104,8 +117,22 @@ class MainActivity : ComponentActivity() {
             MoShuTheme(themeMode) {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     when {
-                        startup?.second == true -> MoShuRoot(actionsToken = actionsRequest.intValue)
-                        startup != null -> OnboardingScreen(onComplete = { scope.launch { app.settings.completeOnboarding() } })
+                        startup?.second == true -> MoShuRoot(
+                            actionsToken = actionsRequest.intValue,
+                            openSettingsToken = settingsRequest.intValue,
+                            todayToken = todayRequest.intValue,
+                            sharedDraft = sharedDraft.value,
+                            onDraftConsumed = { sharedDraft.value = "" },
+                        )
+                        startup != null -> OnboardingScreen(
+                            onComplete = { scope.launch { app.settings.completeOnboarding() } },
+                            // 引导页的「现在配置 AI」要真的能到设置页：先标记引导完成，
+                            // 再请求导航，否则按钮点了没有任何反应。
+                            onConfigureAi = {
+                                scope.launch { app.settings.completeOnboarding() }
+                                settingsRequest.intValue += 1
+                            },
+                        )
                         // 读取 DataStore 期间给一个明确的加载态，而不是一片空白。
                         else -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
@@ -120,6 +147,24 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         if (intent.getBooleanExtra(EXTRA_OPEN_ACTIONS, false)) actionsRequest.intValue += 1
+        consumeSharedText(intent)
+    }
+
+    /**
+     * 处理 ACTION_SEND / ACTION_PROCESS_TEXT。
+     * 分享进来的文本经编码清洗后作为草稿，并请求导航到「今天」。
+     */
+    private fun consumeSharedText(intent: Intent) {
+        val action = intent.action ?: return
+        val raw = when (action) {
+            Intent.ACTION_SEND -> intent.getStringExtra(Intent.EXTRA_TEXT)
+            Intent.ACTION_PROCESS_TEXT -> intent.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT)?.toString()
+            else -> null
+        }
+        val text = TextImport.normalize(raw.orEmpty())
+        if (text.isEmpty()) return
+        sharedDraft.value = text
+        todayRequest.intValue += 1
     }
 
     private companion object {
@@ -147,7 +192,13 @@ private val destinations = listOf(
 )
 
 @Composable
-private fun MoShuRoot(actionsToken: Int) {
+private fun MoShuRoot(
+    actionsToken: Int,
+    openSettingsToken: Int = 0,
+    todayToken: Int = 0,
+    sharedDraft: String = "",
+    onDraftConsumed: () -> Unit = {},
+) {
     val navController = rememberNavController()
     val backStack by navController.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route
@@ -160,13 +211,20 @@ private fun MoShuRoot(actionsToken: Int) {
     androidx.compose.runtime.LaunchedEffect(actionsToken) {
         if (actionsToken > 0) navigateTop(navController, Routes.ACTIONS)
     }
+    androidx.compose.runtime.LaunchedEffect(openSettingsToken) {
+        if (openSettingsToken > 0) navController.navigate(Routes.SETTINGS)
+    }
+    // 从外部分享进来时跳回「今天」，让用户看到预填的草稿
+    androidx.compose.runtime.LaunchedEffect(todayToken) {
+        if (todayToken > 0) navigateTop(navController, Routes.TODAY)
+    }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val useRail = maxWidth >= 840.dp
         if (useRail) {
             Row(Modifier.fillMaxSize()) {
                 if (topLevel) NavigationItems(currentRoute, activeTodos, vertical = true) { navigateTop(navController, it) }
-                AppNavHost(navController, Modifier.weight(1f), actionsToken)
+                AppNavHost(navController, Modifier.weight(1f), actionsToken, sharedDraft, onDraftConsumed)
             }
         } else {
             Scaffold(
@@ -174,7 +232,7 @@ private fun MoShuRoot(actionsToken: Int) {
                 bottomBar = {
                     if (topLevel) NavigationItems(currentRoute, activeTodos, vertical = false) { navigateTop(navController, it) }
                 },
-            ) { padding -> AppNavHost(navController, Modifier.padding(padding), actionsToken) }
+            ) { padding -> AppNavHost(navController, Modifier.padding(padding), actionsToken, sharedDraft, onDraftConsumed) }
         }
     }
 }
@@ -216,7 +274,13 @@ private fun DestinationIcon(destination: Destination, activeTodos: Int) {
 }
 
 @Composable
-private fun AppNavHost(navController: androidx.navigation.NavHostController, modifier: Modifier, actionsToken: Int) {
+private fun AppNavHost(
+    navController: androidx.navigation.NavHostController,
+    modifier: Modifier,
+    actionsToken: Int,
+    sharedDraft: String = "",
+    onDraftConsumed: () -> Unit = {},
+) {
     Box(modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
         NavHost(
             navController = navController,
@@ -230,6 +294,8 @@ private fun AppNavHost(navController: androidx.navigation.NavHostController, mod
                     onOpenMemory = { navigateTop(navController, Routes.MEMORY) },
                     onOpenActions = { navigateTop(navController, Routes.ACTIONS) },
                     onSettings = { navController.navigate(Routes.SETTINGS) },
+                    initialDraft = sharedDraft,
+                    onDraftConsumed = onDraftConsumed,
                 )
             }
             composable(Routes.MEMORY) {

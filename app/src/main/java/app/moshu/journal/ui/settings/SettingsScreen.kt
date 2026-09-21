@@ -11,6 +11,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -49,6 +51,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TimePicker
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -56,12 +59,15 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.moshu.journal.BuildConfig
+import app.moshu.journal.ai.UrlNormalizer
 import app.moshu.journal.reminder.Notifications
 import app.moshu.journal.reminder.ReminderScheduler
 import app.moshu.journal.ui.components.MoShuPageHeader
@@ -69,7 +75,7 @@ import java.util.Locale
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit, modifier: Modifier = Modifier) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -80,6 +86,11 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit, modifier: M
     var showSoundDialog by remember { mutableStateOf(false) }
     var restoreUri by remember { mutableStateOf<Uri?>(null) }
     var replaceUri by remember { mutableStateOf<Uri?>(null) }
+    val apiKeyFocus = remember { FocusRequester() }
+    // 校验失败时把焦点移到 API Key 输入框，否则用户只看到一条提示却不知道该改哪里。
+    LaunchedEffect(state.apiKeyError) {
+        if (state.apiKeyError.isNotBlank()) runCatching { apiKeyFocus.requestFocus() }
+    }
 
     val backupExport = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri -> uri?.let(viewModel::exportBackup) }
     val markdownExport = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/markdown")) { uri -> uri?.let(viewModel::exportMarkdown) }
@@ -130,6 +141,19 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit, modifier: M
         item {
             SettingsCard("AI 服务", Icons.Rounded.AutoAwesome) {
                 Text("墨枢直连你选择的 OpenAI 兼容接口，支持服务商基础地址与完整请求端点。密钥只加密保存在本机。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                // 成本可见性：不写清楚的话，导入 200 条记录会悄悄触发 200 次计费调用。
+                Text("每条新记录都会调用一次模型（开启图片理解时可能两次）。", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    "发送到服务商的内容：记录正文（整理）、你的问题与相关摘录（问墨枢）、近 7 天摘录（提醒文案）、图片（仅在开启时）。当前服务商：${hostOf(state.baseUrl)}。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    if (state.usage.totalCalls == 0) "本机还没有调用记录。"
+                    else "本月约 ${state.usage.monthCalls} 次调用 · ${state.usage.monthTokens} tokens（累计 ${state.usage.totalCalls} 次）",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(state.templates) { template ->
                         val applied = state.baseUrl.trim() == template.url && state.model.trim() == template.model
@@ -142,14 +166,53 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit, modifier: M
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                // 归一化后的真实请求地址：路径猜错以前要到 404 才会发现。
+                val resolvedUrl = runCatching { UrlNormalizer.requestUrl(state.baseUrl, state.exactEndpoint) }.getOrNull()
+                if (!resolvedUrl.isNullOrBlank()) {
+                    Text("将请求：$resolvedUrl", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
+                }
+                if (state.hint.isNotBlank()) {
+                    Text(state.hint, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 OutlinedTextField(state.model, viewModel::onModelChange, Modifier.fillMaxWidth(), label = { Text("文本模型") }, singleLine = true)
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(onClick = viewModel::fetchModels, enabled = !state.loadingModels) {
+                        if (state.loadingModels) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp) else Text("获取模型列表")
+                    }
+                    if (state.discoveredModels.isNotEmpty()) {
+                        Text("${state.discoveredModels.size} 个可选", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                if (state.discoveredModels.isNotEmpty()) {
+                    // 模型名拼错是 BYOK 最常见的失败原因，能点选就不要手打。
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        state.discoveredModels.take(40).forEach { id ->
+                            FilterChip(state.model.trim() == id, { viewModel.selectModel(id) }, { Text(id) })
+                        }
+                    }
+                }
                 OutlinedTextField(
                     state.apiKey,
                     viewModel::onApiKeyChange,
-                    Modifier.fillMaxWidth(),
-                    label = { Text(if (state.hasStoredKey) "API Key（已保存，留空不变）" else "API Key") },                    singleLine = true,
+                    Modifier.fillMaxWidth().focusRequester(apiKeyFocus),
+                    label = { Text(if (state.hasStoredKey) "API Key（已保存，留空不变）" else "API Key") },
+                    singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
+                    isError = state.apiKeyError.isNotBlank(),
+                    // 与今日页的计数器一致：始终提供 supportingText 槽位，只在有错时渲染内容。
+                    supportingText = { if (state.apiKeyError.isNotBlank()) Text(state.apiKeyError) },
                 )
+                if (state.hasStoredKey) {
+                    // 留空输入框的语义是「保持原密钥」，所以轮换/撤销必须有个显式入口。
+                    TextButton(onClick = viewModel::clearAiKey) { Text("清除密钥", color = MaterialTheme.colorScheme.error) }
+                }
+                if (state.hostChanged) {
+                    Text(
+                        "服务地址已更改，请重新确认密钥",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
                 if (state.keyUnreadable) {
                     Text(
                         "已保存的 API Key 无法解密（通常是更换了锁屏方式，或从备份恢复到了新设备）。请重新填写一次密钥。",
@@ -181,7 +244,28 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit, modifier: M
                             Switch(state.exactEndpoint, viewModel::onExactEndpointChange)
                         }
                         OutlinedTextField(state.authHeaderName, viewModel::onAuthHeaderChange, Modifier.fillMaxWidth(), label = { Text("鉴权 Header") }, singleLine = true)
-                        OutlinedTextField(state.authPrefix, viewModel::onAuthPrefixChange, Modifier.fillMaxWidth(), label = { Text("值前缀") }, singleLine = true)
+                        OutlinedTextField(
+                            state.authPrefix,
+                            viewModel::onAuthPrefixChange,
+                            Modifier.fillMaxWidth(),
+                            label = { Text("值前缀（含尾部空格）") },
+                            singleLine = true,
+                            supportingText = { Text("例如 \"Bearer \"（Bearer 后有一个空格）") },
+                        )
+                        // 前缀里的空格肉眼看不见，拼错就是一连串查不出原因的 401，所以直接展示拼装结果。
+                        val keyPreview = maskedKey(state.apiKey, state.hasStoredKey)
+                        Text(
+                            "将发送：${state.authHeaderName.ifBlank { "Authorization" }}: ${state.authPrefix}$keyPreview",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.secondary,
+                        )
+                        if (state.authPrefix.isNotBlank() && !state.authPrefix.endsWith(" ")) {
+                            Text(
+                                "前缀末尾没有空格，会拼成「${state.authPrefix}$keyPreview」；如服务商要求空格请补上。",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
                     }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -313,4 +397,20 @@ private fun SettingsCard(title: String, icon: androidx.compose.ui.graphics.vecto
             content()
         }
     }
+}
+
+/** 展示用主机名；没写协议的地址也尽量解析，解析不出就原样显示。 */
+private fun hostOf(url: String): String {
+    val value = url.trim()
+    if (value.isBlank()) return "未填写"
+    return runCatching { java.net.URI(if (value.contains("://")) value else "https://$value").host }
+        .getOrNull()?.takeIf { it.isNotBlank() }
+        ?: value.trimEnd('/')
+}
+
+/** 密钥只显示首尾各 4 位；已保存但不在输入框里的密钥不还原明文。 */
+private fun maskedKey(apiKey: String, hasStored: Boolean): String = when {
+    apiKey.isNotBlank() -> if (apiKey.length > 8) "${apiKey.take(4)}…${apiKey.takeLast(4)}" else "…"
+    hasStored -> "已保存的密钥"
+    else -> "sk-…"
 }

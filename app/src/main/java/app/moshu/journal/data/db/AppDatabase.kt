@@ -9,7 +9,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [EntryEntity::class, TodoEntity::class, AttachmentEntity::class, AiReviewEntity::class, EntryFtsEntity::class],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -60,8 +60,24 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v4：记录 AI 产出的出处（模型 / 提示词版本），标记 AI 建议的行动，
+         * 并让月度叙事能说明自己基于多少条记录生成。
+         * 有了这些字段，改进提示词之后才可能识别并重新整理旧的条目。
+         */
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `entries` ADD COLUMN `aiModel` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `entries` ADD COLUMN `aiPromptVersion` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `todos` ADD COLUMN `isAiSuggested` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `ai_reviews` ADD COLUMN `model` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `ai_reviews` ADD COLUMN `promptVersion` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `ai_reviews` ADD COLUMN `entryCount` INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun build(context: Context): AppDatabase = Room.databaseBuilder(context, AppDatabase::class.java, "moshu.db")
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
             .build()
     }
 }

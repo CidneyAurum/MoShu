@@ -3,6 +3,7 @@ package app.moshu.journal.data
 import android.content.Context
 import android.net.Uri
 import androidx.room.withTransaction
+import app.moshu.journal.ai.Enricher
 import app.moshu.journal.ai.EnrichmentWorker
 import app.moshu.journal.data.db.AppDatabase
 import app.moshu.journal.data.db.AttachmentEntity
@@ -11,6 +12,7 @@ import app.moshu.journal.data.db.EntryAiState
 import app.moshu.journal.data.db.EntryDao
 import app.moshu.journal.data.db.EntryEntity
 import app.moshu.journal.data.db.ManualMetadata
+import app.moshu.journal.data.db.TodoEntity
 import app.moshu.journal.data.media.ImageStorage
 import app.moshu.journal.data.settings.SettingsRepository
 import kotlinx.coroutines.flow.Flow
@@ -19,6 +21,9 @@ import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import org.json.JSONArray
+
+/** reEnrich 的结果。调用方据此给出反馈，否则「重新整理」看起来像按了没反应。 */
+enum class ReEnrichResult { Enriched, NotConfigured, EmptyContent, AllManual }
 
 class JournalRepository(
     private val context: Context,
@@ -92,15 +97,22 @@ class JournalRepository(
         mood: String,
         summary: String,
     ) {
-        val contentChanged = content.trim() != entry.content
+        val trimmedContent = content.trim()
+        val contentChanged = trimmedContent != entry.content
         val aiConfigured = settings.currentAiConfig().valid
-        val mask = entry.manualMetadataMask or ManualMetadata.CATEGORY or ManualMetadata.TAGS or ManualMetadata.MOOD or ManualMetadata.SUMMARY
+        val safeCategory = categoryId.coerceIn(Category.LIFE, Category.IDEA)
+        val safeTags = tags.map { it.trim() }.filter { it.isNotEmpty() }.take(6)
+        val safeSummary = summary.trim().take(60)
+        // 只冻结用户真正改动的字段。原先无条件 OR 上四个位，用户改一个错别字
+        // 就会把分类/标签/情绪/概括永久锁死，AI 再也更新不了。
+        val mask = entry.manualMetadataMask or
+            Enricher.changedFields(entry, trimmedContent, safeCategory, safeTags, mood, safeSummary)
         val updated = entry.copy(
-            content = content.trim(),
-            categoryId = categoryId.coerceIn(Category.LIFE, Category.IDEA),
-            tagsJson = JSONArray(tags.map { it.trim() }.filter { it.isNotEmpty() }.take(6)).toString(),
+            content = trimmedContent,
+            categoryId = safeCategory,
+            tagsJson = JSONArray(safeTags).toString(),
             mood = mood,
-            summary = summary.trim().take(60),
+            summary = safeSummary,
             manualMetadataMask = mask,
             updatedAt = System.currentTimeMillis(),
             aiState = if (contentChanged && aiConfigured) EntryAiState.PENDING.value else if (contentChanged) EntryAiState.IDLE.value else entry.aiState,
@@ -114,11 +126,40 @@ class JournalRepository(
         db.entryDao().update(entry.copy(isPinned = !entry.isPinned, updatedAt = System.currentTimeMillis()))
     }
 
-    suspend fun reEnrich(entryId: Long) {
-        val entry = db.entryDao().byId(entryId) ?: return
-        if (!settings.currentAiConfig().valid || entry.content.isBlank()) return
+    suspend fun reEnrich(entryId: Long): ReEnrichResult {
+        val entry = db.entryDao().byId(entryId) ?: return ReEnrichResult.EmptyContent
+        if (!settings.currentAiConfig().valid) return ReEnrichResult.NotConfigured
+        if (entry.content.isBlank()) return ReEnrichResult.EmptyContent
         db.entryDao().updateAiState(entryId, EntryAiState.PENDING.value)
         EnrichmentWorker.enqueue(context, entryId)
+        // 四个元数据字段都被用户手动接管时，这次整理只会更新行动项，需要如实告诉用户。
+        val mask = entry.manualMetadataMask
+        val allManual = ManualMetadata.isManual(mask, ManualMetadata.CATEGORY) &&
+            ManualMetadata.isManual(mask, ManualMetadata.TAGS) &&
+            ManualMetadata.isManual(mask, ManualMetadata.MOOD) &&
+            ManualMetadata.isManual(mask, ManualMetadata.SUMMARY)
+        return if (allManual) ReEnrichResult.AllManual else ReEnrichResult.Enriched
+    }
+
+    /** 清除指定的人工标记位（mask 为要清除的位），让 AI 重新接管这些字段。 */
+    suspend fun clearManualMetadata(entry: EntryEntity, mask: Int) {
+        if (mask == 0) return
+        db.entryDao().update(
+            entry.copy(
+                manualMetadataMask = entry.manualMetadataMask and mask.inv(),
+                updatedAt = System.currentTimeMillis(),
+            )
+        )
+    }
+
+    /** 采纳 AI 建议的行动：转为用户自有行动，后续整理不会再把它当作可丢弃的自动提取项。 */
+    suspend fun acceptAiTodo(todo: TodoEntity) {
+        db.todoDao().update(todo.copy(isAiSuggested = false, isUserCreated = true, updatedAt = System.currentTimeMillis()))
+    }
+
+    /** 忽略 AI 建议的行动：直接删除，避免它继续出现在「行动」里。 */
+    suspend fun dismissAiTodo(todo: TodoEntity) {
+        db.todoDao().deleteById(todo.id)
     }
 
     suspend fun addImages(entryId: Long, uris: List<Uri>) {

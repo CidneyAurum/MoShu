@@ -53,6 +53,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -68,12 +69,15 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.moshu.journal.MoShuApp
 import app.moshu.journal.data.media.ImageStorage
 import app.moshu.journal.ui.components.EntryCard
 import app.moshu.journal.ui.components.MoShuEmptyState
 import app.moshu.journal.ui.components.MoShuPageHeader
 import app.moshu.journal.ui.components.MoShuSectionTitle
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
@@ -87,11 +91,21 @@ fun TodayScreen(
     onOpenActions: () -> Unit,
     onSettings: () -> Unit,
     modifier: Modifier = Modifier,
+    /** 列表里点击 AI 状态标签时的重试入口；未接入时用本页作用域直接提交整理。 */
+    onRetryAi: ((Long) -> Unit)? = null,
+    /** 从外部分享进来的草稿：预填到输入框，让用户先改再存。 */
+    initialDraft: String = "",
+    onDraftConsumed: () -> Unit = {},
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val today = LocalDate.now()
     var promptOffset by remember(today) { mutableStateOf(0) }
     val prompt = prompts[(today.dayOfYear + promptOffset) % prompts.size]
+    val scope = rememberCoroutineScope()
+    // 未配置 AI 时不该展示「整理中」这类卡片：它在宣传一个关掉的功能，还像卡住的任务。
+    val aiConfigured by remember { MoShuApp.instance.settings.aiConfig.map { it.valid } }
+        .collectAsStateWithLifecycle(false)
+    val retryAi: (Long) -> Unit = onRetryAi ?: { id -> scope.launch { MoShuApp.instance.journal.reEnrich(id) } }
 
     // 应用长时间驻留后台后跨过午夜时，需要把「今天」的范围推到新的一天。
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -135,7 +149,7 @@ fun TodayScreen(
                         }
                     }
                 }
-                CaptureComposer(state.saving, viewModel::add)
+                CaptureComposer(state.saving, viewModel::add, initialDraft, onDraftConsumed)
                 if (state.message.isNotBlank()) {
                     Text(state.message, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error)
                 }
@@ -144,6 +158,7 @@ fun TodayScreen(
                     pendingCount = state.pendingCount,
                     todoCount = state.activeTodos.size,
                     online = state.online,
+                    aiConfigured = aiConfigured,
                     onMemory = onOpenMemory,
                     onActions = onOpenActions,
                 )
@@ -169,6 +184,7 @@ fun TodayScreen(
                     onClick = { onOpenEntry(entry.id) },
                     modifier = Modifier.padding(horizontal = 20.dp),
                     attachments = state.attachments[entry.id].orEmpty(),
+                    onRetryAi = { retryAi(entry.id) },
                 )
             }
         }
@@ -176,8 +192,20 @@ fun TodayScreen(
 }
 
 @Composable
-private fun CaptureComposer(saving: Boolean, onAdd: (String, List<Uri>, () -> Unit) -> Unit) {
+private fun CaptureComposer(
+    saving: Boolean,
+    onAdd: (String, List<Uri>, () -> Unit) -> Unit,
+    initialDraft: String = "",
+    onDraftConsumed: () -> Unit = {},
+) {
     var draft by remember { mutableStateOf("") }
+    // 分享进来的文字直接填进输入框，而不是静默入库——用户应当有机会先修改。
+    LaunchedEffect(initialDraft) {
+        if (initialDraft.isNotBlank()) {
+            draft = initialDraft
+            onDraftConsumed()
+        }
+    }
     val images = remember { mutableStateListOf<Uri>() }
     val haptic = LocalHapticFeedback.current
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(ImageStorage.MAX_ATTACHMENTS)) { selected ->
@@ -277,12 +305,16 @@ private fun CaptureComposer(saving: Boolean, onAdd: (String, List<Uri>, () -> Un
 }
 
 @Composable
-private fun TodayStats(entryCount: Int, pendingCount: Int, todoCount: Int, online: Boolean, onMemory: () -> Unit, onActions: () -> Unit) {
-    // 离线时 AI 整理任务被网络约束挡住不会执行，这里如实说明，避免看起来像卡死。
-    val pendingLabel = if (pendingCount > 0 && !online) "等待网络" else "整理中"
+private fun TodayStats(entryCount: Int, pendingCount: Int, todoCount: Int, online: Boolean, aiConfigured: Boolean, onMemory: () -> Unit, onActions: () -> Unit) {
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
         StatCard("记录", entryCount.toString(), Modifier.weight(1f).clip(MaterialTheme.shapes.medium).clickable(onClick = onMemory))
-        StatCard(pendingLabel, pendingCount.toString(), Modifier.weight(1f))
+        if (aiConfigured) {
+            when {
+                // 离线时 AI 整理任务被网络约束挡住不会执行，这里如实说明，避免看起来像卡死。
+                pendingCount > 0 -> StatCard(if (!online) "等待网络" else "整理中", pendingCount.toString(), Modifier.weight(1f))
+                else -> StatCard("AI 整理", "已完成", Modifier.weight(1f))
+            }
+        }
         StatCard("待行动", todoCount.toString(), Modifier.weight(1f).clip(MaterialTheme.shapes.medium).clickable(onClick = onActions))
     }
 }

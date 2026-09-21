@@ -25,4 +25,6 @@ data class TodoEntity(
     val reminderAt: Long? = null,
     @ColumnInfo(defaultValue = "0") val isUserCreated: Boolean = false,
     @ColumnInfo(defaultValue = "0") val userEdited: Boolean = false,
+    // 由 AI 从记录里提取、尚未被用户确认的行动项
+    @ColumnInfo(defaultValue = "0") val isAiSuggested: Boolean = false,
 )

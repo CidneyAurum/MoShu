@@ -42,13 +42,13 @@ import androidx.compose.ui.unit.dp
 private data class OnboardingPage(val icon: ImageVector, val eyebrow: String, val title: String, val body: String)
 
 private val pages = listOf(
-    OnboardingPage(Icons.Rounded.AutoAwesome, "欢迎来到墨枢", "只管记录，整理交给我", "一句话、一张图，都能成为清晰的记忆。墨枢会在后台补全概括、标签、情绪和行动项。"),
+    OnboardingPage(Icons.Rounded.AutoAwesome, "欢迎来到墨枢", "只管记录，整理交给我", "不配置也能完整记录；配置后墨枢会自动补全概括、标签与行动项。"),
     OnboardingPage(Icons.Rounded.Lock, "本地优先", "你的记忆，先留在你的设备", "没有账号，也没有墨枢服务器。正文、图片和待办默认只保存在本机。"),
-    OnboardingPage(Icons.Rounded.Image, "图片边界", "是否理解图片，由你决定", "图片默认不会发给 AI。只有配置视觉模型并手动开启后，才会参与智能整理。"),
+    OnboardingPage(Icons.Rounded.Image, "图片边界", "是否理解图片，由你决定", "记录正文在开启 AI 后会被发送到你配置的服务商；图片默认不发送，需额外开启。"),
 )
 
 @Composable
-fun OnboardingScreen(onComplete: () -> Unit, modifier: Modifier = Modifier) {
+fun OnboardingScreen(onComplete: () -> Unit, modifier: Modifier = Modifier, onConfigureAi: () -> Unit = {}) {
     var page by remember { mutableIntStateOf(0) }
     Column(
         modifier = modifier.fillMaxSize().padding(horizontal = 28.dp, vertical = 32.dp),
@@ -89,6 +89,10 @@ fun OnboardingScreen(onComplete: () -> Unit, modifier: Modifier = Modifier) {
                 onClick = { if (page < pages.lastIndex) page++ else onComplete() },
                 modifier = Modifier.weight(1f),
             ) { Text(if (page == pages.lastIndex) "开始记录" else "继续", modifier = Modifier.padding(vertical = 6.dp)) }
+        }
+        // 在介绍 AI 的那一页直接给出配置入口，而不是让用户自己去找设置页；配置始终是可选的。
+        if (page == 0) {
+            TextButton(onClick = onConfigureAi, modifier = Modifier.fillMaxWidth()) { Text("现在配置 AI（可选）") }
         }
         // 三步都是说明性的，不该强制用户翻完才能进应用。
         TextButton(onClick = onComplete, modifier = Modifier.fillMaxWidth()) { Text("跳过") }

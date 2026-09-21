@@ -46,6 +46,18 @@ interface EntryDao {
     @Query("UPDATE entries SET aiState = :state, aiError = :error, updatedAt = :updatedAt WHERE id = :id")
     suspend fun updateAiState(id: Long, state: String, error: String = "", updatedAt: Long = System.currentTimeMillis())
 
+    /** 供整理引擎统计已有标签词频，促使模型复用用户既有标签。 */
+    @Query("SELECT tagsJson FROM entries WHERE tagsJson != '[]' AND tagsJson != ''")
+    suspend fun allTagsJson(): List<String>
+
+    /** 整理失败的条目数，用于发一条汇总通知而不是每条一弹。 */
+    @Query("SELECT COUNT(*) FROM entries WHERE aiState = 'failed'")
+    suspend fun countFailed(): Int
+
+    /** 统计提示词/模型版本落后的条目数，供设置页提示「重新整理旧记录」。 */
+    @Query("SELECT COUNT(*) FROM entries WHERE aiPromptVersion < :promptVersion")
+    suspend fun countOutdated(promptVersion: Int): Int
+
     @Query("DELETE FROM entries WHERE id = :id") suspend fun deleteById(id: Long)
     @Query("DELETE FROM entries") suspend fun deleteAll()
 }

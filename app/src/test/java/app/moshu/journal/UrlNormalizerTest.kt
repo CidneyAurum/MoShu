@@ -65,9 +65,11 @@ class UrlNormalizerTest {
     }
 
     @Test
-    fun `自定义相对路径追加 v1`() {
+    fun `自定义相对路径只补 chat completions`() {
+        // 带路径时不再插入 /v1：之前会把 https://x.com/api/chat 拼成
+        // https://x.com/api/chat/v1/chat/completions，直接 404。
         assertEquals(
-            "https://my.host/openai/v1/chat/completions",
+            "https://my.host/openai/chat/completions",
             UrlNormalizer.chatCompletionsUrl("my.host/openai")
         )
     }

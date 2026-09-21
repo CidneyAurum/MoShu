@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -27,6 +28,7 @@ import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.EditNote
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.PushPin
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SearchOff
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.Card
@@ -146,6 +148,8 @@ fun EntryCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     attachments: List<AttachmentEntity> = emptyList(),
+    /** 整理失败时卡片内的重试入口；不传则只保留「整理失败」文案。 */
+    onRetryAi: (() -> Unit)? = null,
 ) {
     Card(
         onClick = onClick,
@@ -187,7 +191,7 @@ fun EntryCard(
                         }
                     }
                     Spacer(Modifier.weight(1f))
-                    AiStateLabel(entry.aiState)
+                    AiStateLabel(entry.aiState, onOpen = onClick, onRetry = onRetryAi)
                     if (mood.isNotEmpty()) Text(mood)
                 }
             }
@@ -280,19 +284,42 @@ fun LocalImage(
 }
 
 @Composable
-private fun AiStateLabel(state: String) {
-    val label = when (EntryAiState.from(state)) {
+private fun AiStateLabel(state: String, onOpen: () -> Unit, onRetry: (() -> Unit)?) {
+    val entryState = EntryAiState.from(state)
+    val label = when (entryState) {
         EntryAiState.PENDING -> "等待整理"
         EntryAiState.RUNNING -> "整理中"
         EntryAiState.FAILED -> "整理失败"
         EntryAiState.IDLE -> "本地记录"
         EntryAiState.SUCCEEDED -> return
     }
-    Text(
-        label,
-        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
-        color = if (state == EntryAiState.FAILED.value) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-    )
+    val failed = entryState == EntryAiState.FAILED
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+            color = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+            // 「整理失败」本身没有原因，点它进详情页看失败原因，比让用户自己找快。
+            modifier = if (failed) {
+                Modifier
+                    .clickable(onClickLabel = "查看失败原因") { onOpen() }
+                    .heightIn(min = 40.dp)
+                    .wrapContentHeight(Alignment.CenterVertically)
+            } else {
+                Modifier
+            },
+        )
+        if (failed && onRetry != null) {
+            IconButton(onClick = onRetry, modifier = Modifier.size(32.dp)) {
+                Icon(
+                    Icons.Rounded.Refresh,
+                    contentDescription = "重新整理",
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
+    }
 }
 
 fun parseTags(tagsJson: String): List<String> = runCatching {
