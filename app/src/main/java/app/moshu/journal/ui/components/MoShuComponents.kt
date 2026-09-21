@@ -185,6 +185,12 @@ fun MoShuEmptyState(
     body: String,
     modifier: Modifier = Modifier,
     icon: androidx.compose.ui.graphics.vector.ImageVector = Icons.Rounded.AutoAwesome,
+    /**
+     * 可选的下一步动作。空状态只说「还没有」是没用的，
+     * 用户需要知道现在能做什么，所以关键页面都带一个按钮。
+     */
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
 ) {
     Column(
         modifier = modifier.fillMaxWidth().padding(32.dp),
@@ -204,6 +210,11 @@ fun MoShuEmptyState(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
         )
+        if (actionLabel != null && onAction != null) {
+            TextButton(onClick = onAction, modifier = Modifier.heightIn(min = 48.dp)) {
+                Text(actionLabel, style = MaterialTheme.typography.labelLarge)
+            }
+        }
     }
 }
 

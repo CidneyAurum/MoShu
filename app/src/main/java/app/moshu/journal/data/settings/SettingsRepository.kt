@@ -29,11 +29,15 @@ data class AiUsage(
     val totalTokens: Int = 0,
 )
 
+/** 最近搜索词最多保留多少条。再多也会把筛选行挤满。 */
+private const val MAX_RECENT_SEARCHES = 8
+
 class SettingsRepository(context: Context) {
 
     private val appContext = context.applicationContext
 
     private object Keys {
+        val RECENT_SEARCHES = stringPreferencesKey("recent_searches")
         val BASE_URL = stringPreferencesKey("ai_base_url")
         val MODEL = stringPreferencesKey("ai_model")
         val VISION_MODEL = stringPreferencesKey("ai_vision_model")
@@ -157,6 +161,31 @@ class SettingsRepository(context: Context) {
             prefs[Keys.AI_USAGE_TOTAL_CALLS] = (prefs[Keys.AI_USAGE_TOTAL_CALLS] ?: 0L) + 1
             prefs[Keys.AI_USAGE_TOTAL_TOKENS] = (prefs[Keys.AI_USAGE_TOTAL_TOKENS] ?: 0L) + tokens
         }
+    }
+
+    /**
+     * 最近搜索词（R60）。
+     *
+     * 存在 DataStore 而不是数据库：它是纯界面便利数据，丢了没有任何损失，
+     * 也不该参与备份或在「数据」页被当成用户内容。
+     */
+    val recentSearches: Flow<List<String>> = appContext.dataStore.data.map { prefs ->
+        prefs[Keys.RECENT_SEARCHES].orEmpty().split('').filter { it.isNotBlank() }
+    }
+
+    /** 记一次搜索。重复词提到最前，最多保留 8 条。 */
+    suspend fun rememberSearch(query: String) {
+        val value = query.trim()
+        if (value.isEmpty()) return
+        appContext.dataStore.edit { prefs ->
+            val current = prefs[Keys.RECENT_SEARCHES].orEmpty().split('').filter { it.isNotBlank() }
+            val next = (listOf(value) + current.filterNot { it == value }).take(MAX_RECENT_SEARCHES)
+            prefs[Keys.RECENT_SEARCHES] = next.joinToString("")
+        }
+    }
+
+    suspend fun clearRecentSearches() {
+        appContext.dataStore.edit { it[Keys.RECENT_SEARCHES] = "" }
     }
 
     val aiUsage: Flow<AiUsage> = appContext.dataStore.data.map { prefs ->

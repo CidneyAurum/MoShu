@@ -25,6 +25,9 @@ import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SearchOff
 import androidx.compose.material.icons.rounded.Star
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DatePicker
@@ -74,6 +77,7 @@ fun MemoryScreen(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val filtering = state.filters.active
+    val recentSearches by viewModel.recentSearches.collectAsStateWithLifecycle()
     var pickingDay by remember { mutableStateOf(false) }
 
     Column(modifier.fillMaxSize()) {
@@ -105,7 +109,38 @@ fun MemoryScreen(
                 },
                 singleLine = true,
                 shape = MaterialTheme.shapes.large,
+                // 回车提交，把这次查询记进「最近」。
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { viewModel.commitSearch() }),
             )
+        }
+        // 搜索框空着时给最近搜过的词：省去重新打一遍，也提示「搜过什么」。
+        if (state.filters.searchMode && state.filters.query.isBlank() && recentSearches.isNotEmpty()) {
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                item {
+                    Text(
+                        "最近",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                items(recentSearches) { keyword ->
+                    FilterChip(
+                        selected = false,
+                        onClick = { viewModel.setQuery(keyword) },
+                        label = { Text(keyword) },
+                    )
+                }
+                item {
+                    TextButton(onClick = viewModel::clearRecentSearches, modifier = Modifier.heightIn(min = 48.dp)) {
+                        Text("清除")
+                    }
+                }
+            }
         }
         LazyRow(
             contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
@@ -199,6 +234,9 @@ fun MemoryScreen(
                         else -> "换个筛选看看，或回到今天写下一笔。"
                     },
                     icon = if (state.filters.query.isNotBlank()) Icons.Rounded.SearchOff else Icons.Rounded.EditNote,
+                    // 筛选状态下给「清除筛选」：用户卡在空结果里时最需要的就是退回去。
+                    actionLabel = if (filtering) "清除筛选" else null,
+                    onAction = if (filtering) viewModel::clearFilters else null,
                 )
             }
         } else {

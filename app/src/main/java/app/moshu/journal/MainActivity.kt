@@ -2,6 +2,7 @@ package app.moshu.journal
 
 import android.content.Intent
 import android.os.Bundle
+import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -168,6 +169,28 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    /**
+     * 外接键盘快捷键。
+     *
+     * 只在按下 Ctrl（或 Meta）时介入，避免抢走输入框里的普通按键——
+     * 用户正在写正文时按 n 应该打出字母 n，而不是新建。
+     */
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        val accel = event.isCtrlPressed || event.isMetaPressed
+        if (accel) {
+            when (keyCode) {
+                KeyEvent.KEYCODE_F -> { searchRequest.intValue += 1; return true }
+                KeyEvent.KEYCODE_N -> { todayRequest.intValue += 1; return true }
+            }
+        }
+        // Esc 返回上一层；编辑态由详情页自己的确认流程接管（它比这里更清楚有没有改动）。
+        if (keyCode == KeyEvent.KEYCODE_ESCAPE) {
+            onBackPressedDispatcher.onBackPressed()
+            return true
+        }
+        return super.onKeyDown(keyCode, event)
     }
 
     override fun onNewIntent(intent: Intent) {

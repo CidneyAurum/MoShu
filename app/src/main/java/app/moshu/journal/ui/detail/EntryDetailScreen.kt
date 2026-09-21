@@ -308,6 +308,12 @@ fun EntryDetailScreen(
                                 TextButton(onClick = { fontStep = (fontStep + 1) % FONT_STEPS.size }) {
                                     Text("字号 ${FONT_STEPS[fontStep].second}")
                                 }
+                                // 字数按非空白字符计，与写作统计口径一致。
+                                Text(
+                                    "${entry.content.count { !it.isWhitespace() }} 字",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
                             }
                         }
                     }

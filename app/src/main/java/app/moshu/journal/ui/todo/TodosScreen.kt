@@ -188,6 +188,8 @@ fun TodosScreen(
                 if (state.showCompleted) "还没有完成记录" else "行动列表很轻",
                 if (state.showCompleted) "完成一件事后，它会安静地留在这里。" else "直接添加，或在记录里写下计划让 AI 自动提取。",
                 Modifier.weight(1f),
+                actionLabel = if (state.showCompleted) "回到进行中" else null,
+                onAction = if (state.showCompleted) ({ viewModel.setShowCompleted(false) }) else null,
             )
         } else {
             LazyColumn(

@@ -64,6 +64,19 @@ class RecordViewModel : ViewModel() {
         )
     }.onEach { loading.value = false }
 
+    /** 最近搜索词。只在搜索框为空时展示，点一下即复用。 */
+    val recentSearches: StateFlow<List<String>> = app.settings.recentSearches
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** 提交一次搜索（回车或点最近词），记入历史。 */
+    fun commitSearch() {
+        viewModelScope.launch { app.settings.rememberSearch(filters.value.query) }
+    }
+
+    fun clearRecentSearches() {
+        viewModelScope.launch { app.settings.clearRecentSearches() }
+    }
+
     val uiState: StateFlow<RecordUiState> = entries.flatMapLatest { source ->
         combine(
             app.journal.observeAttachments(source.map { it.id }),
