@@ -1,6 +1,7 @@
 package app.moshu.journal.ui.record
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,24 +17,32 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.EditNote
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SearchOff
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DatePicker
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -42,14 +51,18 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.moshu.journal.data.db.Category
 import app.moshu.journal.ui.components.EntryCard
 import app.moshu.journal.ui.components.EntryCardActions
+import app.moshu.journal.ui.components.MOOD_OPTIONS
 import app.moshu.journal.ui.components.MoShuEmptyState
 import app.moshu.journal.ui.components.MoShuPageHeader
 import app.moshu.journal.ui.components.shareEntry
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
+import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun MemoryScreen(
     viewModel: RecordViewModel,
@@ -60,6 +73,7 @@ fun MemoryScreen(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val filtering = state.filters.active
+    var pickingDay by remember { mutableStateOf(false) }
 
     Column(modifier.fillMaxSize()) {
         if (state.pendingCount > 0) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -125,6 +139,17 @@ fun MemoryScreen(
                     leadingIcon = { Icon(Icons.Rounded.ErrorOutline, null) },
                 )
             }
+            // 长列表里靠滚动找某一天太低效，给一个直接定位的入口。
+            item {
+                FilterChip(
+                    selected = state.filters.day != null,
+                    onClick = { if (state.filters.day != null) viewModel.setDay(null) else pickingDay = true },
+                    label = {
+                        Text(state.filters.day?.let { "仅看 ${it.format(DateTimeFormatter.ofPattern("M月d日"))}" } ?: "按日期")
+                    },
+                    leadingIcon = { Icon(Icons.Rounded.CalendarMonth, null) },
+                )
+            }
         }
         LazyRow(
             contentPadding = PaddingValues(horizontal = 20.dp, vertical = 2.dp),
@@ -171,8 +196,9 @@ fun MemoryScreen(
             // 分组与格式化器必须放在 LazyColumn 内容 lambda 之外：
             // 那个 lambda 每次重组（含每一帧滚动）都会重新执行。
             val dayFormatter = remember { DateTimeFormatter.ofPattern("M月d日 EEEE", Locale.CHINA) }
+            // 分组用与筛选用同一套换算（entryDay），否则「只筛出来的那天」可能对不上分组头。
             val grouped = remember(state.entries) {
-                state.entries.groupBy { Instant.ofEpochMilli(it.createdAt).atZone(ZoneId.systemDefault()).toLocalDate() }
+                state.entries.groupBy(::entryDay)
             }
             LazyColumn(
                 modifier = Modifier.weight(1f),
@@ -180,11 +206,14 @@ fun MemoryScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 grouped.forEach { (day, dayEntries) ->
-                    item(key = "day-$day") {
-                        Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text(day.format(dayFormatter), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Spacer(Modifier.weight(1f))
-                            Text("${dayEntries.size} 条", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    // 吸顶：长列表滚到一半时仍要知道自己在看哪一天。
+                    stickyHeader(key = "day-$day") {
+                        Surface(color = MaterialTheme.colorScheme.surface) {
+                            Row(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text(day.format(dayFormatter), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Spacer(Modifier.weight(1f))
+                                Text("${dayEntries.size} 条", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
                         }
                     }
                     items(dayEntries, key = { it.id }) { entry ->
@@ -205,16 +234,33 @@ fun MemoryScreen(
             }
         }
     }
+
+    if (pickingDay) {
+        val pickerState = rememberDatePickerState(
+            initialSelectedDateMillis = (state.filters.day ?: LocalDate.now())
+                .atStartOfDay().toInstant(ZoneOffset.UTC).toEpochMilli(),
+        )
+        AlertDialog(
+            onDismissRequest = { pickingDay = false },
+            title = { Text("只看哪一天") },
+            text = { DatePicker(pickerState) },
+            confirmButton = {
+                TextButton(onClick = {
+                    pickerState.selectedDateMillis?.let {
+                        viewModel.setDay(Instant.ofEpochMilli(it).atZone(ZoneOffset.UTC).toLocalDate())
+                    }
+                    pickingDay = false
+                }) { Text("确定") }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.setDay(null); pickingDay = false }) { Text("清除日期") }
+            },
+        )
+    }
 }
 
-/** 情绪筛选块：值与文案必须与详情页编辑器的选项一致，覆盖全部五种情绪。 */
-private val MOOD_FILTERS = listOf(
-    "great" to "✨ 很好",
-    "good" to "🙂 不错",
-    "neutral" to "😌 平静",
-    "low" to "😕 低落",
-    "bad" to "😞 难过",
-)
+/** 情绪筛选块直接取自共用的 MOOD_OPTIONS，避免与详情页编辑器、卡片表情各写一份。 */
+private val MOOD_FILTERS = MOOD_OPTIONS
 
 private val EntrySort.label: String
     get() = when (this) {

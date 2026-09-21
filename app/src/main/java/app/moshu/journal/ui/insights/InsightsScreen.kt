@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
@@ -133,6 +134,12 @@ fun InsightsScreen(
                             Text(state.monthLabel, style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center, modifier = Modifier.weight(1f))
                             IconButton(onClick = viewModel::nextMonth, enabled = state.monthOffset > 0) { Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, "下个月") }
                         }
+                        // 能往回翻 24 个月，翻远之后一格一格点回来太费劲。
+                        if (state.monthOffset > 0) {
+                            TextButton(onClick = viewModel::currentMonth, modifier = Modifier.heightIn(min = 48.dp)) {
+                                Text("回到本月")
+                            }
+                        }
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
                             Stat("记录", state.entryCount.toString())
                             Stat("活跃", "${state.activeDays}天")
@@ -153,7 +160,8 @@ fun InsightsScreen(
                         val max = state.categoryCounts.maxOrNull()?.coerceAtLeast(1) ?: 1
                         Category.NAMES.forEachIndexed { index, label ->
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(label, style = MaterialTheme.typography.labelMedium, modifier = Modifier.size(width = 42.dp, height = 20.dp))
+                                // 固定尺寸会在系统字体放大后裁掉「生活/工作/灵感」，改成只约束最小宽度。
+                                Text(label, style = MaterialTheme.typography.labelMedium, modifier = Modifier.widthIn(min = 42.dp).wrapContentHeight())
                                 Box(Modifier.weight(1f).height(8.dp).background(MaterialTheme.colorScheme.surfaceVariant, CircleShape)) {
                                     Box(Modifier.fillMaxWidth(state.categoryCounts[index].toFloat() / max).height(8.dp).background(CategoryColors[index], CircleShape))
                                 }

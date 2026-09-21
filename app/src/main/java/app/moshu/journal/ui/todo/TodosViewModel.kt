@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 data class TodosUiState(
     val active: List<TodoEntity> = emptyList(),
@@ -98,6 +99,60 @@ class TodosViewModel : ViewModel() {
             app.notices.post("已删除「${todo.text.take(18)}」", "撤销") {
                 viewModelScope.launch { reinsert(listOf(todo)) }
             }
+        }
+    }
+
+    /**
+     * 批量改截止日。
+     *
+     * 只改日期不动提醒：用户在多选里点「设为明天」时并没有表态要不要提醒，
+     * 悄悄排一条通知会让人意外。已有提醒的条目按其新日期顺延。
+     */
+    fun setDue(todos: List<TodoEntity>, epochDay: Int?) {
+        if (todos.isEmpty()) return
+        viewModelScope.launch {
+            val now = System.currentTimeMillis()
+            todos.forEach { todo ->
+                val reminderAt = if (todo.reminderAt != null && epochDay != null) {
+                    LocalDate.ofEpochDay(epochDay.toLong())
+                        .atTime(TodoReminderWorker.REMINDER_HOUR, 0)
+                        .atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+                } else todo.reminderAt
+                val updated = todo.copy(
+                    dueEpochDay = epochDay,
+                    reminderAt = reminderAt,
+                    updatedAt = now,
+                )
+                app.database.todoDao().update(updated)
+                if (reminderAt == null || updated.done) TodoReminderWorker.cancel(app, todo.uid)
+                else TodoReminderWorker.schedule(app, updated)
+            }
+            message.value = "已把 ${todos.size} 条行动的截止日改成${dueLabel(epochDay)}。"
+        }
+    }
+
+    /** 批量删除：整批只占一个撤销入口，撤销时一次性全部恢复。 */
+    fun deleteMany(todos: List<TodoEntity>) {
+        if (todos.isEmpty()) return
+        viewModelScope.launch {
+            todos.forEach { todo ->
+                TodoReminderWorker.cancel(app, todo.uid)
+                app.database.todoDao().deleteById(todo.id)
+            }
+            app.notices.post("已删除 ${todos.size} 条行动", "撤销") {
+                viewModelScope.launch { reinsert(todos) }
+            }
+        }
+    }
+
+    private fun dueLabel(epochDay: Int?): String {
+        if (epochDay == null) return "未设置"
+        val today = LocalDate.now().toEpochDay()
+        return when (epochDay.toLong() - today) {
+            0L -> "今天"
+            1L -> "明天"
+            7L -> "下周"
+            else -> LocalDate.ofEpochDay(epochDay.toLong()).format(DateTimeFormatter.ofPattern("M月d日"))
         }
     }
 

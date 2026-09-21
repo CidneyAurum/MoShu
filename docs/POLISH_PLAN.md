@@ -10,26 +10,31 @@
 
 ---
 
-## 落地状态（按代码核实，非仅按提交记录）
+## 落地状态：50 轮全部完成
 
-已实现（代码中可见对应符号与调用点）：
+本轮补齐的轮次（此前未做）：
 
-- R01 失败通知深链与筛选：`EXTRA_OPEN_AI_FAILURES` 在 `EnrichmentWorker`/`MainActivity` 两处共用。
-- R02 撤销：`NoticeBus` + `JournalRepository.restoreEntry`（4 个文件引用），附件清理由事务内改为延迟执行。
-- R03 铃声选择器改为带预览的单选列表。
-- R04 卡片长按菜单 + `JournalRepository.duplicateEntry`（3 个文件）。
-- R05 草稿持久化：独立 DataStore `moshu_draft`。
-- R06 AI 整理完成反馈：详情页显示「已由 <model> 整理」。
-- R07 独立 AI 通知渠道。
-- R09 / R10 搜索命中数与排序、清除筛选。
-- R13 / R14 / R22 / R23 / R28 / R40 / R43 / R45：修改时间、放弃修改确认、清空对话、回顾编辑落库、Key 明文开关、AI 建议待办独立分区、统一确认弹窗、备份字段补全（`isAiSuggested` 等 7 个文件可查）。
+- **R08 待办多选与批量操作**：长按进入多选，工具条含 已选 n/全选/今天/明天/删除/取消；批量删除走可撤销路径（`TodosViewModel.deleteMany` 一次撤销整批）。
+- **R11 AI 动作收口**：新增 `ui/components/AiActions.kt` 作为 AI 文案的唯一定义处（状态短标签/详情标题/提示/重试按钮文案/reEnrich 回执）。卡片、详情页状态卡、`EntryDetailViewModel` 三处全部改从它取文案，不再各写一套。
+- **R12 今天页「还有 N 条 →」**（实现过程中发现此前已落地）。
+- **R19 待办快捷截止日**：编辑对话框增加 今天/明天/下周 三个 `FilterChip`，再点一次取消，另有「清除」。
+- **R21 回顾页「回到本月」**：`monthOffset > 0` 时出现，一点归零。
+- **R30 分类标签不再写死尺寸**：`size(42.dp, 20.dp)` → `widthIn(min = 42.dp).wrapContentHeight()`，系统字体放大后不再裁字。
+- **R36 记忆页分组头吸顶**：`item` → `stickyHeader`，并加 `Surface` 底色避免卡片透出。
+- **R37 按日期定位**：筛选行新增「按日期」`FilterChip` + `DatePicker`；分组与筛选统一走 `entryDay()`，保证「筛出来的那天」与分组头一致。
+- **R41 待办滑动操作**：`SwipeToDismissBox`——右滑完成、左滑删除（走可撤销路径）；执行后弹回原位而不是直接消失，多选态下手势关闭以免抢事件。
+- **R44 跨午夜刷新**：新增等到下一个整点的延迟任务，跨天后刷新日期范围并重置提示语索引（原先只有 `ON_RESUME`，一直停在本页跨 00:00 时标题会停在昨天）。
+- **R50 删除/合并清单**：
+  - MERGE 全部落地：三份 host 解析 → `ai/Hosts.kt`；情绪选项 → `ui/components/MoodOptions.kt`（`RecordScreen` 的 `MOOD_FILTERS` 与详情页 `moodLabel` 都改为复用它）；三处确认弹窗 → `MoShuConfirmDialog`；AI 状态与重试 → `AiActions.kt`；服务定位 → `ui/LocalMoShuApp.kt`。
+  - DELETE：经 grep 核实 `AttachmentDao.observeAll()`/`query` 已无定义、`EntryDao` 无可删查询，`AttachmentDao` 全库订阅已由 `observeForEntries` 取代，无遗留死符号；`clean compileDebugKotlin` 零告警。
+  - `res/values/strings.xml` 已按约定在文件头注明「文案硬编码在 Kotlin，迁多语言为后续可选工程」。
 
-部分实现（核心动作未完成，需继续）：
+此前各轮（R01–R07、R09、R10、R13–R18、R20、R22–R29、R31–R35、R38–R43、R45–R49）已在前述提交中落地，本轮复核确认代码中符号与调用点均在。
 
-- **R11**：只统一了文案与状态描述，**未**合并散落的 AI 动作入口。`ai/Actions.kt` 类文件不存在，「重新整理」仍分别在 `ui/components/MoShuComponents.kt:302`、`ui/components/MoShuComponents.kt:477`、`ui/detail/EntryDetailScreen.kt:251` 三处各自实现。这是用户原始抱怨「AI 动作散落三处」的那一轮，需要真正收口。
-- **R50**：合并已完成一半——`ai/Hosts.kt`、`ui/components/MoodOptions.kt`、`ui/LocalMoShuApp.kt` 已抽出并接入；但 DELETE 清单（`AttachmentDao.observeAll()` 等无引用成员）尚未执行删除。
+顺带修正的两处不实文案：
 
-尚未实现：R08、R12、R15–R21、R24–R27、R29–R39、R41、R42、R44、R46–R49。
+- 「清空已完成」确认框原先写「此操作无法撤销」，但 `clearCompleted` 实际通过 `NoticeBus` 提供了整批撤销，已改为实话。
+- 重试 AI 成功后原先提示「已提交整理」，而详情页状态卡本身就会变成「等待 AI 整理」，属于重复噪音，现改为只在失败/无法整理时提示。
 
 ---
 

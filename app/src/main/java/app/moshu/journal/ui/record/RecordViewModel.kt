@@ -16,6 +16,9 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
 
 /** 记忆列表排序。置顶始终优先，这里只决定其余部分的顺序。 */
 enum class EntrySort { NEWEST, OLDEST, UPDATED }
@@ -29,10 +32,12 @@ data class MemoryFilters(
     /** 只看 AI 整理失败的条目；失败通知 deep link 会默认打开它。 */
     val failedOnly: Boolean = false,
     val sort: EntrySort = EntrySort.NEWEST,
+    /** 只看某一天；用来在长列表里快速定位，而不是靠滚动找。 */
+    val day: LocalDate? = null,
 ) {
     /** 除排序外是否有筛选生效，决定「清除」按钮是否出现。 */
     val active: Boolean
-        get() = category != null || mood != null || pinnedOnly || failedOnly || query.isNotBlank()
+        get() = category != null || mood != null || pinnedOnly || failedOnly || query.isNotBlank() || day != null
 }
 
 data class RecordUiState(
@@ -69,7 +74,8 @@ class RecordViewModel : ViewModel() {
                 (filter.category == null || entry.categoryId == filter.category) &&
                     (filter.mood == null || entry.mood == filter.mood) &&
                     (!filter.pinnedOnly || entry.isPinned) &&
-                    (!filter.failedOnly || entry.aiState == EntryAiState.FAILED.value)
+                    (!filter.failedOnly || entry.aiState == EntryAiState.FAILED.value) &&
+                    (filter.day == null || entryDay(entry) == filter.day)
             }
             RecordUiState(sortEntries(visible, filter.sort), attachments.groupBy { it.entryId }, filter, pending, loading.value)
         }
@@ -94,6 +100,10 @@ class RecordViewModel : ViewModel() {
 
     fun setSort(sort: EntrySort) {
         filters.value = filters.value.copy(sort = sort)
+    }
+
+    fun setDay(day: LocalDate?) {
+        filters.value = filters.value.copy(day = day)
     }
 
     /** 一键清掉所有筛选（排序保留，它不算筛选）。 */
@@ -127,6 +137,10 @@ class RecordViewModel : ViewModel() {
         }
     }
 }
+
+/** 条目所属的自然日（本地时区）。筛选与分组必须用同一套换算，否则会出现「筛出来的不在这天」。 */
+internal fun entryDay(entry: EntryEntity): LocalDate =
+    Instant.ofEpochMilli(entry.createdAt).atZone(ZoneId.systemDefault()).toLocalDate()
 
 /** 置顶恒在前，其余按所选维度排列。 */
 internal fun sortEntries(entries: List<EntryEntity>, sort: EntrySort): List<EntryEntity> =

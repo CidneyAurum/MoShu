@@ -446,13 +446,9 @@ fun LocalImage(
 @Composable
 private fun AiStateLabel(state: String, onOpen: () -> Unit, onRetry: (() -> Unit)?) {
     val entryState = EntryAiState.from(state)
-    val label = when (entryState) {
-        EntryAiState.PENDING -> "等待整理"
-        EntryAiState.RUNNING -> "整理中"
-        EntryAiState.FAILED -> "整理失败"
-        EntryAiState.IDLE -> "本地记录"
-        EntryAiState.SUCCEEDED -> return
-    }
+    // 已整理成功不需要在卡片上占一行：那是最常见的情况，标出来只会增加噪音。
+    if (entryState == EntryAiState.SUCCEEDED) return
+    val label = AiActions.shortLabel(state)
     val failed = entryState == EntryAiState.FAILED
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(
@@ -474,7 +470,7 @@ private fun AiStateLabel(state: String, onOpen: () -> Unit, onRetry: (() -> Unit
             IconButton(onClick = onRetry, modifier = Modifier.size(48.dp)) {
                 Icon(
                     Icons.Rounded.Refresh,
-                    contentDescription = "重新整理",
+                    contentDescription = AiActions.RETRY_LABEL,
                     modifier = Modifier.size(16.dp),
                     tint = MaterialTheme.colorScheme.error,
                 )

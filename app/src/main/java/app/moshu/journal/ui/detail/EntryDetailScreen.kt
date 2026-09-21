@@ -70,10 +70,12 @@ import app.moshu.journal.data.db.AttachmentEntity
 import app.moshu.journal.data.db.Category
 import app.moshu.journal.data.db.EntryAiState
 import app.moshu.journal.data.media.ImageStorage
+import app.moshu.journal.ui.components.AiActions
 import app.moshu.journal.ui.components.EntryImageStrip
 import app.moshu.journal.ui.components.LocalImage
 import app.moshu.journal.ui.components.MoShuConfirmDialog
 import app.moshu.journal.ui.components.MoShuPageHeader
+import app.moshu.journal.ui.components.moodLabel
 import app.moshu.journal.ui.components.parseTags
 import java.text.SimpleDateFormat
 import java.time.LocalDate
@@ -248,7 +250,7 @@ fun EntryDetailScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.weight(1f),
                             )
-                            TextButton(onClick = viewModel::retryAi) { Text("重新整理") }
+                            TextButton(onClick = viewModel::retryAi) { Text(AiActions.RETRY_LABEL) }
                         }
                     }
                 }
@@ -256,8 +258,8 @@ fun EntryDetailScreen(
                     item {
                         Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
                             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text(aiTitle(entry.aiState), style = MaterialTheme.typography.titleMedium)
-                                Text(entry.aiError.ifBlank { "连接 AI 后，墨枢会补全概括、标签、情绪和行动项。" }, style = MaterialTheme.typography.bodySmall)
+                                Text(AiActions.title(entry.aiState), style = MaterialTheme.typography.titleMedium)
+                                Text(AiActions.hint(entry.aiState, entry.aiError), style = MaterialTheme.typography.bodySmall)
                                 // 说清楚这条正文到底有没有离开设备、发给了谁。
                                 if (entry.aiState != EntryAiState.IDLE.value) {
                                     Text(
@@ -266,10 +268,12 @@ fun EntryDetailScreen(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 }
-                                OutlinedButton(onClick = viewModel::retryAi) {
-                                    Icon(Icons.Rounded.Refresh, null)
-                                    Spacer(Modifier.size(6.dp))
-                                    Text("重新整理")
+                                if (AiActions.canRetry(entry.aiState)) {
+                                    OutlinedButton(onClick = viewModel::retryAi) {
+                                        Icon(Icons.Rounded.Refresh, null)
+                                        Spacer(Modifier.size(6.dp))
+                                        Text(AiActions.RETRY_LABEL)
+                                    }
                                 }
                             }
                         }
@@ -586,8 +590,6 @@ private fun InfoPill(text: String) {
 }
 
 private fun splitTags(raw: String): List<String> = raw.split(',', '，', '#').map { it.trim() }.filter { it.isNotBlank() }.distinct().take(6)
-private fun moodLabel(value: String): String = when (value) { "great" -> "✨ 很好"; "good" -> "🙂 不错"; "neutral" -> "😌 平静"; "low" -> "😕 低落"; "bad" -> "😞 难过"; else -> value }
-private fun aiTitle(state: String): String = when (EntryAiState.from(state)) { EntryAiState.PENDING -> "等待 AI 整理"; EntryAiState.RUNNING -> "AI 正在整理"; EntryAiState.FAILED -> "这次没有整理成功"; EntryAiState.IDLE -> "尚未启用 AI 整理"; EntryAiState.SUCCEEDED -> "已整理" }
 
 /** 展示用服务商主机名；没写协议的地址也尽量解析。 */
 private fun providerHost(url: String): String = Hosts.of(url).ifBlank { "你配置的服务商" }

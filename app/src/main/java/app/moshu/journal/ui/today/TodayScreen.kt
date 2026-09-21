@@ -79,10 +79,13 @@ import app.moshu.journal.ui.components.MoShuPageHeader
 import app.moshu.journal.ui.components.MoShuSectionTitle
 import app.moshu.journal.ui.components.shareEntry
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.time.Duration
 import java.time.LocalDate
+import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
@@ -126,6 +129,18 @@ fun TodayScreen(
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // 一直停在本页跨过 00:00 时 ON_RESUME 不会触发，标题日期与列表会停在昨天。
+    // 等到下一个整点再比对一次日期，跨天就刷新并换一条提示语。
+    LaunchedEffect(today) {
+        while (true) {
+            val now = LocalDateTime.now()
+            val nextMidnight = now.toLocalDate().plusDays(1).atStartOfDay()
+            delay(Duration.between(now, nextMidnight).toMillis().coerceAtLeast(1_000L))
+            promptOffset = 0
+            viewModel.refreshDay()
+        }
     }
 
     LazyColumn(

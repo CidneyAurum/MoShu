@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  目前只有 app_name：其余用户可见文案都写在 Kotlin 里（Compose 组件与 ViewModel 的提示语）。
+  这样做的代价是无法使用 Android 的多语言资源机制。要迁移需逐页搬运并回归测试，
+  收益不等于成本，因此维持现状，记为后续可选工程。
+-->
 <resources>
     <string name="app_name">墨枢</string>
 </resources>

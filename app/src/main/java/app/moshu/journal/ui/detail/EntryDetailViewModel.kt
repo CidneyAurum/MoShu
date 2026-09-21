@@ -5,11 +5,11 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.moshu.journal.MoShuApp
-import app.moshu.journal.data.ReEnrichResult
 import app.moshu.journal.data.db.AttachmentEntity
 import app.moshu.journal.data.db.EntryEntity
 import app.moshu.journal.data.db.TodoEntity
 import app.moshu.journal.reminder.TodoReminderWorker
+import app.moshu.journal.ui.components.AiActions
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -135,13 +135,10 @@ class EntryDetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel() {
     fun retryAi() {
         viewModelScope.launch {
             // 结果必须落成可见提示：以前无论成功、未配置还是正文为空都静默返回，
-            // 用户点「重新整理」看不出任何变化。
-            when (val result = app.journal.reEnrich(entryId)) {
-                ReEnrichResult.Enriched -> note("已提交整理")
-                ReEnrichResult.NotConfigured -> note("尚未配置 AI 服务，请到设置页填写", error = true)
-                ReEnrichResult.EmptyContent -> note("正文为空，无法整理", error = true)
-                ReEnrichResult.AllManual -> note("概括、标签等已由你手动设置，仅重新提取行动项")
-            }
+            // 用户点「重新整理」看不出任何变化。success 时详情页卡片自己会变成「等待 AI 整理」，
+            // 不需要再叠一条提示，所以只有失败/无法整理才提示。
+            val result = app.journal.reEnrich(entryId)
+            AiActions.reEnrichMessage(result)?.let { note(it, error = true) }
         }
     }
 
@@ -150,13 +147,7 @@ class EntryDetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel() {
         viewModelScope.launch {
             val entry = app.database.entryDao().byId(entryId) ?: return@launch
             app.journal.clearManualMetadata(entry, mask)
-            note(
-                when (app.journal.reEnrich(entryId)) {
-                    ReEnrichResult.Enriched, ReEnrichResult.AllManual -> "已恢复 AI 管理，正在重新整理"
-                    ReEnrichResult.NotConfigured -> "已恢复 AI 管理；配置 AI 服务后会重新整理"
-                    ReEnrichResult.EmptyContent -> "已恢复 AI 管理"
-                }
-            )
+            note(AiActions.reclaimMessage(app.journal.reEnrich(entryId)))
         }
     }
 
