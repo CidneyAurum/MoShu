@@ -52,6 +52,31 @@ class AiLiveSmokeTest {
     private fun config(key: String = apiKey) =
         AiConfig(baseUrl = baseUrl, apiKey = key, model = model)
 
+    /**
+     * 网络不可达时跳过而不是失败。
+     *
+     * 实况测试依赖真实服务商：DNS 不通、连不上、超时都属于「这次没法测」，
+     * 不该让离线测试套件变红——那会掩盖真正的回归。凭据被拒（401/403）同理，
+     * Key 可能已按安全建议轮换过。
+     */
+    private fun skipIfUnavailable(error: Throwable): Nothing {
+        val transient = error is java.net.UnknownHostException ||
+            error is java.net.ConnectException ||
+            error is java.net.SocketTimeoutException ||
+            error is java.net.NoRouteToHostException ||
+            (error.message?.let { it.contains("401") || it.contains("403") } == true)
+        assumeTrue("服务商当前不可达，跳过实况测试：${error.message}", !transient)
+        throw error
+    }
+
+    private inline fun <T> live(block: () -> T): T = try {
+        block()
+    } catch (error: Throwable) {
+        skipIfUnavailable(error)
+    }
+
+
+
     @Test
     fun `地址归一化拼出 chat completions 端点`() {
         assertEquals("$baseUrl/chat/completions", UrlNormalizer.requestUrl(baseUrl))
@@ -59,14 +84,14 @@ class AiLiveSmokeTest {
 
     @Test
     fun `真实网关接受 json 模式与长度上限`() = runBlocking {
-        val result = AiClient.complete(
+        val result = live { AiClient.complete(
             config(),
             "你是 JSON 生成器。只输出 JSON，不要解释。",
             """把这句话转成 JSON：{"ok":true,"note":"今天加班到十点"} 的形状""",
             temperature = 0.0,
             maxTokens = 200,
             jsonMode = true,
-        )
+        ) }
         assertTrue("期望成功，实际：$result", result is AiClient.Result.Ok)
         val text = (result as AiClient.Result.Ok).text.trim()
         // json 模式生效时返回的应当就是可直接解析的 JSON（而不是被 markdown 包裹的散文）。
@@ -78,7 +103,7 @@ class AiLiveSmokeTest {
 
     @Test
     fun `用量字段被解析出来`() = runBlocking {
-        val result = AiClient.complete(config(), "你是测试助手。", "只回复两个字：可用")
+        val result = live { AiClient.complete(config(), "你是测试助手。", "只回复两个字：可用") }
         assertTrue(result is AiClient.Result.Ok)
         val ok = result as AiClient.Result.Ok
         // 服务端返回 usage 时必须解析出来，否则设置页的「本月约 X 次调用 · Y tokens」是假的。
@@ -88,7 +113,7 @@ class AiLiveSmokeTest {
 
     @Test
     fun `模型列表可以从接口读取`() = runBlocking {
-        when (val models = AiClient.listModels(config())) {
+        when (val models = live { AiClient.listModels(config()) }) {
             is AiClient.ModelsResult.Ok -> {
                 assertTrue("模型列表为空", models.models.isNotEmpty())
                 // 注意：接口接受别名，但 /models 列出的是规范 id
@@ -113,7 +138,7 @@ class AiLiveSmokeTest {
         )
         val numbered = excerpts.mapIndexed { i, body -> "[${i + 1}] $body" }.joinToString("\n")
         val prompt = "【日记摘录】\n$numbered\n\n【问题】排期是怎么定的？"
-        val result = AiClient.complete(config(), AskEngine.SYSTEM_PROMPT, prompt, temperature = 0.3, maxTokens = 400)
+        val result = live { AiClient.complete(config(), AskEngine.SYSTEM_PROMPT, prompt, temperature = 0.3, maxTokens = 400) }
         assertTrue("请求失败：$result", result is AiClient.Result.Ok)
         val text = (result as AiClient.Result.Ok).text
         assertTrue("回答为空", text.isNotBlank())
