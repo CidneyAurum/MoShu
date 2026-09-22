@@ -59,6 +59,9 @@ android {
 
     lint {
         abortOnError = true
+        // mipmap-anydpi-v26 保留：把 adaptive-icon 挪到无版本限定的 mipmap-anydpi 后
+        // AAPT 链接失败（ic_launcher not found），实测只有 v26 目录可用。
+        disable += "ObsoleteSdkInt"
     }
 
     sourceSets.getByName("androidTest").assets.srcDir("$projectDir/schemas")

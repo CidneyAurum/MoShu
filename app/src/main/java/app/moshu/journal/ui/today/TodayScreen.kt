@@ -55,6 +55,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -112,7 +113,7 @@ fun TodayScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val today = LocalDate.now()
-    var promptOffset by remember(today) { mutableStateOf(0) }
+    var promptOffset by remember(today) { mutableIntStateOf(0) }
     val prompt = prompts[(today.dayOfYear + promptOffset) % prompts.size]
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -262,6 +263,8 @@ fun TodayScreen(
                         onEdit = { onOpenEntry(entry.id) },
                         onDuplicate = { viewModel.duplicate(entry) },
                         onTogglePin = { viewModel.togglePinned(entry) },
+                        // 收藏在两处卡片菜单都要能切：只在记忆页有会让「今天」的用户以为没有这个功能。
+                        onToggleStar = { viewModel.toggleStarred(entry) },
                         onShare = { shareEntry(context, entry) },
                         onDelete = { viewModel.delete(entry) },
                         onRetryAi = { retryAi(entry.id) },

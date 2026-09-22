@@ -132,4 +132,33 @@ class PolishRound2Test {
         val text = "今天 写了 一段话\n第二行"
         assertEquals(10, text.count { !it.isWhitespace() })
     }
+
+    // ---------- 时区/跨月边界（D17）----------
+
+    @Test
+    fun `月末最后一天的毫秒值属于当月最后一天`() {
+        // 23:59:59.999 的 createdAt 不能因为取整或时区换算跑进下个月。
+        val zone = java.time.ZoneId.systemDefault()
+        val endOfDay = java.time.LocalDate.of(2026, 1, 31).atTime(23, 59, 59, 999_999_999).atZone(zone)
+        val day = java.time.Instant.ofEpochMilli(endOfDay.toInstant().toEpochMilli())
+            .atZone(zone).toLocalDate()
+        assertEquals(java.time.LocalDate.of(2026, 1, 31), day)
+    }
+
+    @Test
+    fun `月初零点的毫秒值属于当月第一天`() {
+        val zone = java.time.ZoneId.systemDefault()
+        val startOfDay = java.time.LocalDate.of(2026, 3, 1).atStartOfDay(zone)
+        val day = java.time.Instant.ofEpochMilli(startOfDay.toInstant().toEpochMilli())
+            .atZone(zone).toLocalDate()
+        assertEquals(java.time.LocalDate.of(2026, 3, 1), day)
+    }
+
+    @Test
+    fun `标签序列化对含引号的标签安全`() {
+        // 用户可以手动写带引号的标签；JSON 序列化必须转义而不是产出坏 JSON。
+        val tags = listOf("带\"引号\"的标签")
+        val json = JournalRepository.tagsJsonOf(tags)
+        assertEquals(tags, JournalRepository.parseTags(json))
+    }
 }

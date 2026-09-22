@@ -171,6 +171,10 @@ class TodayViewModel : ViewModel() {
         }
     }
 
+    fun toggleStarred(entry: EntryEntity) {
+        viewModelScope.launch { app.journal.toggleStarred(entry) }
+    }
+
     fun togglePinned(entry: EntryEntity) {
         viewModelScope.launch { app.journal.togglePinned(entry) }
     }

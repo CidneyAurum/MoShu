@@ -122,7 +122,7 @@ fun MoShuPageHeader(
 }
 
 @Composable
-fun MoShuSectionTitle(title: String, action: String? = null, onAction: (() -> Unit)? = null, modifier: Modifier = Modifier) {
+fun MoShuSectionTitle(title: String, modifier: Modifier = Modifier, action: String? = null, onAction: (() -> Unit)? = null) {
     Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(title, style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
         if (action != null && onAction != null) {

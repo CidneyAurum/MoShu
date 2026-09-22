@@ -85,6 +85,44 @@ class PolishLogicTest {
     }
 
     @Test
+    fun `条目往返序列化字段逐项一致`() {
+        // D18：不是「几个关键字段还在」，而是完整往返。任何一个字段在 entryJson
+        // 漏写，恢复后就会静默变成默认值，这里必须当场抓住。
+        val original = EntryEntity(
+            uid = "uid-full",
+            content = "完整字段",
+            categoryId = 2,
+            tagsJson = "[\"a\",\"b\"]",
+            summary = "概括",
+            mood = "good",
+            enriched = true,
+            createdAt = 1700000000000L,
+            updatedAt = 1700000009999L,
+            isPinned = true,
+            aiState = EntryAiState.SUCCEEDED.value,
+            aiError = "旧错误",
+            manualMetadataMask = 5,
+            aiModel = "deepseek-flash",
+            aiPromptVersion = 2,
+            deletedAt = 1700000010000L,
+            isStarred = true,
+        )
+        val restored = BackupManager.parseEntry(BackupManager.entryJson(original), "uid-full")
+        assertEquals(original, restored.copy(id = original.id))
+    }
+
+    @Test
+    fun `旧备份缺新字段时用默认值兜底`() {
+        // v4 时代的备份没有 deletedAt/isStarred：恢复出来必须是不在回收站、未收藏，
+        // 不能因为 optLong 默认值写错而出现「deletedAt = -1 被当成在回收站」。
+        val legacy = org.json.JSONObject()
+            .put("uid", "u-old").put("content", "旧数据").put("categoryId", 0)
+        val restored = BackupManager.parseEntry(legacy, "u-old")
+        assertEquals(0L, restored.deletedAt)
+        assertEquals(false, restored.isStarred)
+    }
+
+    @Test
     fun `备份会带上 AI 建议标记`() {
         val suggested = TodoEntity(id = 1, uid = "t-1", text = "补文档", sourceEntryId = 5, createdAt = 1, isAiSuggested = true)
         val restored = BackupManager.parseTodo(BackupManager.todoJson(suggested, "uid-5"), "t-1", 7)

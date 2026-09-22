@@ -141,7 +141,7 @@ fun EntryDetailScreen(
     var selectedImage by remember { mutableStateOf<AttachmentEntity?>(null) }
     var todoDraft by remember { mutableStateOf("") }
     /** 正文字号档位。长文阅读时最常调的一项。 */
-    var fontStep by remember(entry?.id) { mutableStateOf(1) }
+    var fontStep by remember(entry?.id) { mutableIntStateOf(1) }
     val bodyFontSize = FONT_STEPS[fontStep].first
     val links by viewModel.links.collectAsStateWithLifecycle()
     val backlinks by viewModel.backlinks.collectAsStateWithLifecycle()
