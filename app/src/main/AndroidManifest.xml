@@ -5,6 +5,12 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!--
+      日历事件要按精确时刻提醒（14:30 的会不能在 14:40 才响）。
+      Android 12+ 需要该权限；未授权时 EventReminderScheduler 会退回窗口闹钟
+      并在界面明确提示「可能延迟」，而不是静默失准。
+    -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
 
     <application
         android:name=".MoShuApp"
@@ -50,6 +56,10 @@
 
         <receiver
             android:name=".reminder.ReminderReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".reminder.EventReminderReceiver"
             android:exported="false" />
 
         <receiver

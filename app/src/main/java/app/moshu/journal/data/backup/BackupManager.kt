@@ -10,6 +10,9 @@ import app.moshu.journal.data.db.AttachmentEntity
 import app.moshu.journal.data.db.Category
 import app.moshu.journal.data.db.EntryAiState
 import app.moshu.journal.data.db.EntryEntity
+import app.moshu.journal.data.db.EventEntity
+import app.moshu.journal.data.db.Importance
+import app.moshu.journal.data.db.RepeatRule
 import app.moshu.journal.data.db.TodoEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -31,6 +34,8 @@ object BackupManager {
         val images: Int,
         /** 备份里列了、但实际没能恢复的附件数（缺文件或找不到对应记忆）。 */
         val skippedImages: Int = 0,
+        /** 恢复的日历事件数。 */
+        val events: Int = 0,
     )
 
     suspend fun exportBackup(context: Context, db: AppDatabase, uri: Uri) = withContext(Dispatchers.IO) {
@@ -40,6 +45,7 @@ object BackupManager {
         val todos = db.todoDao().allOnce()
         val attachments = db.attachmentDao().allOnce()
         val reviews = db.aiReviewDao().allOnce()
+        val events = db.eventDao().allOnce()
         val entryUidById = entries.associate { it.id to it.uid }
 
         val output = context.contentResolver.openOutputStream(uri, "wt") ?: error("无法创建备份文件")
@@ -54,6 +60,9 @@ object BackupManager {
             zip.putText("todos.json", JSONArray(todos.map { todoJson(it, entryUidById[it.sourceEntryId]) }).toString())
             zip.putText("reviews.json", JSONArray(reviews.map(::reviewJson)).toString())
             zip.putText("attachments.json", JSONArray(attachments.map { attachmentJson(it, entryUidById[it.entryId].orEmpty()) }).toString())
+            // 日历事件也要进备份：用户不会认为「备份」会漏掉自己设的提醒，
+            // 少一张表就会出现「备份了但日历空了」。
+            zip.putText("events.json", JSONArray(events.map(::eventJson)).toString())
             attachments.forEach { attachment ->
                 val file = File(attachment.localPath)
                 if (file.isFile) {
@@ -122,9 +131,12 @@ object BackupManager {
                 val todosJson = JSONArray(zip.readText("todos.json"))
                 val attachmentsJson = JSONArray(zip.readText("attachments.json"))
                 val reviewsJson = runCatching { JSONArray(zip.readText("reviews.json")) }.getOrDefault(JSONArray())
+                // 旧备份没有 events.json：缺失时按空数组处理，保持向后兼容。
+                val eventsJson = runCatching { JSONArray(zip.readText("events.json")) }.getOrDefault(JSONArray())
                 val copiedFiles = mutableListOf<File>()
                 val previousFiles = mutableListOf<File>()
                 var entryCount = 0
+                var eventCount = 0
                 var todoCount = 0
                 var imageCount = 0
                 var skippedImages = 0
@@ -150,6 +162,15 @@ object BackupManager {
                                 val id = db.entryDao().insert(parseEntry(item, uid))
                                 uidToId[uid] = id
                                 entryCount++
+                            }
+                        }
+
+                        for (index in 0 until eventsJson.length()) {
+                            val item = eventsJson.getJSONObject(index)
+                            val uid = item.optString("uid").ifBlank { UUID.randomUUID().toString() }
+                            if (db.eventDao().byUid(uid) == null) {
+                                db.eventDao().insert(parseEvent(item, uid))
+                                eventCount++
                             }
                         }
 
@@ -198,7 +219,7 @@ object BackupManager {
                     throw error
                 }
                 previousFiles.forEach { it.delete() }
-                RestoreResult(entryCount, todoCount, imageCount, skippedImages)
+                RestoreResult(entryCount, todoCount, imageCount, skippedImages, eventCount)
             }
         } finally {
             temp.delete()
@@ -228,6 +249,32 @@ object BackupManager {
         // 回收站状态与收藏标记：不带这两项，换设备恢复后回收站里的条目会「复活」回列表。
         put("deletedAt", e.deletedAt); put("isStarred", e.isStarred)
     }
+
+    internal fun eventJson(e: EventEntity) = JSONObject().apply {
+        put("uid", e.uid); put("title", e.title); put("note", e.note); put("startAt", e.startAt)
+        put("allDay", e.allDay); put("repeatRule", e.repeatRule)
+        put("reminderOffsetMin", e.reminderOffsetMin)
+        put("soundUri", e.soundUri); put("soundLabel", e.soundLabel)
+        put("importance", e.importance); put("done", e.done)
+        put("createdAt", e.createdAt); put("updatedAt", e.updatedAt)
+    }
+
+    internal fun parseEvent(o: JSONObject, uid: String) = EventEntity(
+        uid = uid,
+        title = o.optString("title"),
+        note = o.optString("note"),
+        startAt = o.optLong("startAt", System.currentTimeMillis()),
+        allDay = o.optBoolean("allDay"),
+        // 枚举收敛后再落库：脏值会让日历分组与重复计算同时失灵。
+        repeatRule = o.optString("repeatRule").takeIf { it in RepeatRule.ALL } ?: RepeatRule.NONE,
+        reminderOffsetMin = o.optInt("reminderOffsetMin", EventEntity.NO_REMINDER),
+        soundUri = o.optString("soundUri"),
+        soundLabel = o.optString("soundLabel"),
+        importance = o.optString("importance").takeIf { it == Importance.HIGH } ?: Importance.DEFAULT,
+        done = o.optBoolean("done"),
+        createdAt = o.optLong("createdAt", System.currentTimeMillis()),
+        updatedAt = o.optLong("updatedAt", o.optLong("createdAt")),
+    )
 
     internal fun todoJson(t: TodoEntity, sourceUid: String?) = JSONObject().apply {
         put("uid", t.uid); put("text", t.text); put("sourceEntryUid", sourceUid.orEmpty()); put("createdAt", t.createdAt)

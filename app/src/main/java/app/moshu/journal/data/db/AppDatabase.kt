@@ -8,8 +8,11 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
-    entities = [EntryEntity::class, TodoEntity::class, AttachmentEntity::class, AiReviewEntity::class, EntryFtsEntity::class],
-    version = 5,
+    entities = [
+        EntryEntity::class, TodoEntity::class, AttachmentEntity::class,
+        AiReviewEntity::class, EntryFtsEntity::class, EventEntity::class,
+    ],
+    version = 6,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -17,6 +20,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun todoDao(): TodoDao
     abstract fun attachmentDao(): AttachmentDao
     abstract fun aiReviewDao(): AiReviewDao
+    abstract fun eventDao(): EventDao
 
     companion object {
         val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -88,8 +92,39 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v6：自定义事件（日历上的安排）。
+         *
+         * 与待办分开建表而不是复用 todos：待办只有截止日、按天粒度，
+         * 事件需要精确到分钟、要重复规则、还要各自的提醒铃声与重要级别——
+         * 塞进同一张表会让两边都变成一堆可空字段。
+         */
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `events` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`uid` TEXT NOT NULL DEFAULT '', " +
+                        "`title` TEXT NOT NULL, " +
+                        "`note` TEXT NOT NULL DEFAULT '', " +
+                        "`startAt` INTEGER NOT NULL, " +
+                        "`allDay` INTEGER NOT NULL DEFAULT 0, " +
+                        "`repeatRule` TEXT NOT NULL DEFAULT 'none', " +
+                        "`reminderOffsetMin` INTEGER NOT NULL DEFAULT -1, " +
+                        "`soundUri` TEXT NOT NULL DEFAULT '', " +
+                        "`soundLabel` TEXT NOT NULL DEFAULT '', " +
+                        "`importance` TEXT NOT NULL DEFAULT 'default', " +
+                        "`done` INTEGER NOT NULL DEFAULT 0, " +
+                        "`createdAt` INTEGER NOT NULL, " +
+                        "`updatedAt` INTEGER NOT NULL DEFAULT 0)"
+                )
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_events_uid` ON `events` (`uid`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_events_startAt` ON `events` (`startAt`)")
+            }
+        }
+
         fun build(context: Context): AppDatabase = Room.databaseBuilder(context, AppDatabase::class.java, "moshu.db")
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
             .build()
     }
 }

@@ -142,7 +142,14 @@ enum class MessageSeverity { INFO, WARN, ERROR }
  * 颜色与位置都不同（有的红、有的灰），用户难以判断严重程度。
  */
 @Composable
-fun MoShuMessageBar(text: String, modifier: Modifier = Modifier, severity: MessageSeverity = MessageSeverity.INFO) {
+fun MoShuMessageBar(
+    text: String,
+    modifier: Modifier = Modifier,
+    severity: MessageSeverity = MessageSeverity.INFO,
+    /** 可选的下一步动作。只提示「有问题」而不给出路，用户只能干着急。 */
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
+) {
     if (text.isBlank()) return
     val container = when (severity) {
         MessageSeverity.ERROR -> MaterialTheme.colorScheme.errorContainer
@@ -163,7 +170,13 @@ fun MoShuMessageBar(text: String, modifier: Modifier = Modifier, severity: Messa
                 tint = content,
             )
             Spacer(Modifier.width(8.dp))
-            Text(text, style = MaterialTheme.typography.bodySmall, color = content)
+            Text(text, style = MaterialTheme.typography.bodySmall, color = content, modifier = Modifier.weight(1f, fill = false))
+            if (actionLabel != null && onAction != null) {
+                Spacer(Modifier.width(6.dp))
+                TextButton(onClick = onAction, modifier = Modifier.heightIn(min = 48.dp)) {
+                    Text(actionLabel, style = MaterialTheme.typography.labelLarge, color = content)
+                }
+            }
         }
     }
 }

@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoStories
+import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Insights
 import androidx.compose.material.icons.rounded.WbSunny
@@ -58,6 +59,9 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import app.moshu.journal.data.imports.TextImport
+import app.moshu.journal.data.schedule.EventIntentParser
+import app.moshu.journal.ui.calendar.CalendarScreen
+import app.moshu.journal.ui.calendar.CalendarViewModel
 import app.moshu.journal.ui.detail.EntryDetailScreen
 import app.moshu.journal.ui.detail.EntryDetailViewModel
 import app.moshu.journal.ui.insights.InsightsScreen
@@ -87,6 +91,8 @@ class MainActivity : ComponentActivity() {
     private val settingsRequest = mutableIntStateOf(0)
     /** 分享进来时请求跳回「今天」的令牌。 */
     private val todayRequest = mutableIntStateOf(0)
+    /** 分享进来的句子像「安排」时请求跳到「日历」的令牌。 */
+    private val calendarRequest = mutableIntStateOf(0)
     /** AI 整理失败通知请求跳到「记忆」页失败筛选的令牌。 */
     private val failedRequest = mutableIntStateOf(0)
     /** 桌面快捷方式「搜一搜」请求直接打开搜索框的令牌。 */
@@ -150,6 +156,7 @@ class MainActivity : ComponentActivity() {
                             actionsToken = actionsRequest.intValue,
                             openSettingsToken = settingsRequest.intValue,
                             todayToken = todayRequest.intValue,
+                            calendarToken = calendarRequest.intValue,
                             failedToken = failedRequest.intValue,
                             searchToken = searchRequest.intValue,
                             sharedDraft = sharedDraft.value,
@@ -224,7 +231,10 @@ class MainActivity : ComponentActivity() {
         val text = TextImport.normalize(raw.orEmpty())
         if (text.isEmpty()) return
         sharedDraft.value = text
-        todayRequest.intValue += 1
+        // 分享的句子如果本身就带着日期，用户的意图显然是「安排一件事」，
+        // 直接落到日历页并解析；否则按原逻辑进「今天」当作一条记录来写。
+        val looksLikeSchedule = EventIntentParser.parse(text).day != null
+        if (looksLikeSchedule) calendarRequest.intValue += 1 else todayRequest.intValue += 1
     }
 
     /** 通知与外部 Intent 使用的 extra 名。通知构造方引用同一常量，避免字符串拼写漂移。 */
@@ -244,6 +254,7 @@ private object Routes {
     const val ONBOARDING = "onboarding"
     const val TAGS = "tags"
     const val TRASH = "trash"
+    const val CALENDAR = "calendar"
     const val ENTRY = "entry/{entryId}"
     fun entry(id: Long) = "entry/$id"
 }
@@ -255,6 +266,7 @@ private val destinations = listOf(
     Destination(Routes.MEMORY, "记忆", Icons.Rounded.AutoStories),
     Destination(Routes.ACTIONS, "行动", Icons.Rounded.CheckCircle),
     Destination(Routes.REVIEW, "回顾", Icons.Rounded.Insights),
+    Destination(Routes.CALENDAR, "日历", Icons.Rounded.CalendarMonth),
 )
 
 @Composable
@@ -263,6 +275,7 @@ private fun MoShuRoot(
     openSettingsToken: Int = 0,
     todayToken: Int = 0,
     failedToken: Int = 0,
+    calendarToken: Int = 0,
     searchToken: Int = 0,
     sharedDraft: String = "",
     onDraftConsumed: () -> Unit = {},
@@ -298,6 +311,9 @@ private fun MoShuRoot(
         if (openSettingsToken > 0) navController.navigate(Routes.SETTINGS)
     }
     // 从外部分享进来时跳回「今天」，让用户看到预填的草稿
+    LaunchedEffect(calendarToken) {
+        if (calendarToken > 0) navigateTop(navController, Routes.CALENDAR)
+    }
     LaunchedEffect(todayToken) {
         if (todayToken > 0) navigateTop(navController, Routes.TODAY)
     }
@@ -311,7 +327,7 @@ private fun MoShuRoot(
         if (useRail) {
             Row(Modifier.fillMaxSize()) {
                 if (topLevel) NavigationItems(currentRoute, activeTodos, vertical = true) { navigateTop(navController, it) }
-                AppNavHost(navController, Modifier.weight(1f), actionsToken, failedToken, searchToken, sharedDraft, onDraftConsumed)
+                AppNavHost(navController, Modifier.weight(1f), actionsToken, failedToken, searchToken, calendarToken, sharedDraft, onDraftConsumed)
             }
         } else {
             Scaffold(
@@ -319,7 +335,7 @@ private fun MoShuRoot(
                 bottomBar = {
                     if (topLevel) NavigationItems(currentRoute, activeTodos, vertical = false) { navigateTop(navController, it) }
                 },
-            ) { padding -> AppNavHost(navController, Modifier.padding(padding), actionsToken, failedToken, searchToken, sharedDraft, onDraftConsumed) }
+            ) { padding -> AppNavHost(navController, Modifier.padding(padding), actionsToken, failedToken, searchToken, calendarToken, sharedDraft, onDraftConsumed) }
         }
         // 底栏之上留出空间，避免 snackbar 压住导航项。
         SnackbarHost(snackbar, modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = if (useRail) 16.dp else 88.dp))
@@ -369,9 +385,16 @@ private fun AppNavHost(
     actionsToken: Int,
     failedToken: Int = 0,
     searchToken: Int = 0,
+    calendarToken: Int = 0,
     sharedDraft: String = "",
     onDraftConsumed: () -> Unit = {},
 ) {
+    // 分享的文本只能给其中一个页面：今天页是起始目的地，它会立刻把草稿消费掉，
+    // 于是日历页永远拿到空串。这里按分流结果显式决定归属。
+    val sharedForCalendar = calendarToken > 0
+    val todaySharedDraft = if (sharedForCalendar) "" else sharedDraft
+    val calendarSharedDraft = if (sharedForCalendar) sharedDraft else ""
+
     Box(modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
         NavHost(
             navController = navController,
@@ -384,8 +407,9 @@ private fun AppNavHost(
                     onOpenEntry = { navController.navigate(Routes.entry(it)) },
                     onOpenMemory = { navigateTop(navController, Routes.MEMORY) },
                     onOpenActions = { navigateTop(navController, Routes.ACTIONS) },
+                    onOpenCalendar = { navigateTop(navController, Routes.CALENDAR) },
                     onSettings = { navController.navigate(Routes.SETTINGS) },
-                    initialDraft = sharedDraft,
+                    initialDraft = todaySharedDraft,
                     onDraftConsumed = onDraftConsumed,
                 )
             }
@@ -432,6 +456,15 @@ private fun AppNavHost(
                         navController.popBackStack()
                         navController.navigate(Routes.SETTINGS)
                     },
+                )
+            }
+            composable(Routes.CALENDAR) {
+                CalendarScreen(
+                    viewModel = viewModel<CalendarViewModel>(),
+                    onOpenEntry = { navController.navigate(Routes.entry(it)) },
+                    onSettings = { navController.navigate(Routes.SETTINGS) },
+                    sharedPlanText = calendarSharedDraft,
+                    onSharedConsumed = onDraftConsumed,
                 )
             }
             composable(Routes.TAGS) {

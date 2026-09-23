@@ -8,6 +8,7 @@ import app.moshu.journal.data.Connectivity
 import app.moshu.journal.data.db.AttachmentEntity
 import app.moshu.journal.data.db.EntryAiState
 import app.moshu.journal.data.db.EntryEntity
+import app.moshu.journal.data.db.EventEntity
 import app.moshu.journal.data.db.TodoEntity
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -41,6 +42,10 @@ data class TodayUiState(
     val loading: Boolean = true,
     /** 往年今日：过去几年同一天写下的记录，最近的年份在前。没有内容时为空。 */
     val memories: List<EntryEntity> = emptyList(),
+    /** 今天（含已过期）的安排。日历页负责完整视图，这里只做「别忘了」的提醒。 */
+    val todayEvents: List<EventEntity> = emptyList(),
+    /** 接下来几天的安排，用于「今天没有但明天有」的情况。 */
+    val upcomingEvents: List<EventEntity> = emptyList(),
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -68,6 +73,12 @@ class TodayViewModel : ViewModel() {
     /** 往年今日是「按天」变化的数据，不必随每次写库重查，跟着 dayStart 刷新即可。 */
     private val memories = MutableStateFlow<List<EntryEntity>>(emptyList())
 
+    /** 今天的安排：按天变化，跟着 dayStart 刷新。 */
+    private val todayEvents = MutableStateFlow<List<EventEntity>>(emptyList())
+
+    /** 接下来 7 天的安排（含今天）。 */
+    private val upcomingEvents = MutableStateFlow<List<EventEntity>>(emptyList())
+
     private data class SaveState(val saving: Boolean = false, val message: String = "")
     private data class Feed(val pendingCount: Int, val online: Boolean, val loaded: Boolean)
     private data class Input(val save: SaveState = SaveState(), val draft: String = "", val enriched: Long? = null)
@@ -83,7 +94,10 @@ class TodayViewModel : ViewModel() {
         }
         // 跟着「今天」一起刷新：跨天后「往年今日」也要换成新的那一天。
         viewModelScope.launch {
-            dayStart.collect { memories.value = app.journal.onThisDay() }
+            dayStart.collect {
+                memories.value = app.journal.onThisDay()
+                refreshEvents()
+            }
         }
     }
 
@@ -106,7 +120,17 @@ class TodayViewModel : ViewModel() {
                     feed,
                     input,
                     memories,
-                ) { attachments, todos, feedState, inState, memoryList ->
+                    todayEvents,
+                    upcomingEvents,
+                ) { values ->
+                    // combine 的定长重载最多 5 个流，这里 7 个只能用变参形式。
+                    val attachments = values[0] as List<AttachmentEntity>
+                    val todos = values[1] as List<TodoEntity>
+                    val feedState = values[2] as Feed
+                    val inState = values[3] as Input
+                    val memoryList = values[4] as List<EntryEntity>
+                    val dayEvents = values[5] as List<EventEntity>
+                    val upcoming = values[6] as List<EventEntity>
                     TodayUiState(
                         entries = entries,
                         attachments = attachments.groupBy { it.entryId },
@@ -118,6 +142,8 @@ class TodayViewModel : ViewModel() {
                         justEnrichedId = inState.enriched,
                         online = feedState.online,
                         memories = memoryList,
+                        todayEvents = dayEvents,
+                        upcomingEvents = upcoming,
                         loading = !feedState.loaded,
                     )
                 }
@@ -135,6 +161,22 @@ class TodayViewModel : ViewModel() {
     }
 
     fun consumeEnriched() { enriched.value = null }
+
+    /** 重新读取安排。事件表变化后由界面调用，避免为它再挂一条长订阅。 */
+    fun refreshEvents() {
+        viewModelScope.launch {
+            val zone = ZoneId.systemDefault()
+            val today = LocalDate.now()
+            val dayStartMs = today.atStartOfDay(zone).toInstant().toEpochMilli()
+            val weekEndMs = today.plusDays(8).atStartOfDay(zone).toInstant().toEpochMilli()
+            val all = app.database.eventDao().between(dayStartMs, weekEndMs).filter { !it.done }
+            todayEvents.value = all.filter {
+                val d = java.time.Instant.ofEpochMilli(it.startAt).atZone(zone).toLocalDate()
+                d == today
+            }
+            upcomingEvents.value = all
+        }
+    }
 
     fun onDraftChange(value: String) {
         draft.value = value

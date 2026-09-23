@@ -40,6 +40,8 @@ class MoShuApp : Application() {
         journal = JournalRepository(applicationContext, database, settings)
         Notifications.ensureChannel(this)
         Notifications.ensureAiChannel(this)
+        // 事件渠道按「铃声 + 重要级」动态创建，这里只保证基础渠道存在。
+        Notifications.ensureEventChannel(this, "", "", "default")
         cleanupOrphanAttachments()
         purgeExpiredTrash()
         recoverInterruptedEnrichments()

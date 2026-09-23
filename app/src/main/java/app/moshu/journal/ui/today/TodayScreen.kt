@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -88,6 +89,8 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.material.icons.rounded.NotificationsActive
+import app.moshu.journal.data.db.EventEntity
 import app.moshu.journal.data.db.EntryEntity
 import java.time.Duration
 import java.time.Instant
@@ -103,6 +106,7 @@ fun TodayScreen(
     onOpenEntry: (Long) -> Unit,
     onOpenMemory: () -> Unit,
     onOpenActions: () -> Unit,
+    onOpenCalendar: () -> Unit = {},
     onSettings: () -> Unit,
     modifier: Modifier = Modifier,
     /** 列表里点击 AI 状态标签时的重试入口；未接入时用本页作用域直接提交整理。 */
@@ -133,7 +137,11 @@ fun TodayScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) viewModel.refreshDay()
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.refreshDay()
+                // 安排可能在日历页被改过，回到今天页要重新读一次。
+                viewModel.refreshEvents()
+            }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
@@ -238,6 +246,26 @@ fun TodayScreen(
                 MemoryCard(entry = entry, onClick = { onOpenEntry(entry.id) }, modifier = Modifier.padding(horizontal = 20.dp))
             }
         }
+        // 安排放在记忆之前：时间敏感的事先看到，才不会被「记录」挤到下面。
+        if (state.todayEvents.isNotEmpty() || state.upcomingEvents.isNotEmpty()) {
+            item {
+                Row(Modifier.padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+                    MoShuSectionTitle(
+                        if (state.todayEvents.isEmpty()) "接下来的安排" else "今天的安排 · ${state.todayEvents.size}",
+                        action = "日历",
+                        onAction = onOpenCalendar,
+                    )
+                }
+            }
+            val shown = (if (state.todayEvents.isNotEmpty()) state.todayEvents else state.upcomingEvents).take(3)
+            items(shown, key = { "event-${it.id}" }) { event ->
+                TodayEventRow(
+                    event = event,
+                    isToday = state.todayEvents.any { it.id == event.id },
+                    modifier = Modifier.padding(horizontal = 20.dp),
+                )
+            }
+        }
         item {
             Row(Modifier.padding(horizontal = 20.dp)) {
                 MoShuSectionTitle("今天的记忆", action = if (state.entries.isNotEmpty()) "查看全部" else null, onAction = onOpenMemory)
@@ -276,6 +304,64 @@ fun TodayScreen(
                 item {
                     TextButton(onClick = onOpenMemory, modifier = Modifier.padding(horizontal = 20.dp)) {
                         Text("还有 ${state.entries.size - 4} 条今天的记忆 →")
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 「今天」页里的安排行。刻意比日历页更简：这里只需要「几点、做什么、有没有提醒」，
+ * 完整信息在日历页看。
+ */
+@Composable
+private fun TodayEventRow(
+    event: EventEntity,
+    isToday: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val zone = remember { ZoneId.systemDefault() }
+    val dayFormat = remember { DateTimeFormatter.ofPattern("M月d日", Locale.CHINA) }
+    val day = remember(event.startAt) { Instant.ofEpochMilli(event.startAt).atZone(zone).toLocalDate() }
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+    ) {
+        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        if (event.allDay) day.format(dayFormat) + " 全天"
+                        else (if (isToday) "" else day.format(dayFormat) + " ") +
+                            Instant.ofEpochMilli(event.startAt).atZone(zone).toLocalTime()
+                                .format(DateTimeFormatter.ofPattern("HH:mm")),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        event.title,
+                        style = MaterialTheme.typography.bodyLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                if (event.hasReminder) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Rounded.NotificationsActive, null, Modifier.size(12.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(Modifier.width(3.dp))
+                        Text(
+                            buildString {
+                                append(if (event.reminderOffsetMin == 0) "准点提醒" else "提前 ${event.reminderOffsetMin} 分钟")
+                                // 自定义铃声要露出来：用户为不同事件设不同铃声就是为了区分。
+                                if (event.soundUri.isNotBlank()) append(" · ${event.soundLabel.ifBlank { "自定义铃声" }}")
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
             }

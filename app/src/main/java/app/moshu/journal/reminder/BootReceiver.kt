@@ -27,6 +27,8 @@ class BootReceiver : BroadcastReceiver() {
                 }
                 // 待办提醒同样存的是绝对时刻，跨时区后要按新的本地 09:00 重排。
                 TodoReminderWorker.rescheduleAll(appContext)
+                // 事件提醒按「下一次发生 - 提前量」现算，跨时区后同样要重排。
+                EventReminderScheduler.rescheduleAll(appContext)
             } finally {
                 result.finish()
             }

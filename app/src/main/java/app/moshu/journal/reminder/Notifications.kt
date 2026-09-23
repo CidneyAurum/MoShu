@@ -10,6 +10,7 @@ import android.net.Uri
 import androidx.core.app.NotificationCompat
 import app.moshu.journal.MainActivity
 import app.moshu.journal.R
+import app.moshu.journal.data.db.EventEntity
 import app.moshu.journal.data.db.TodoEntity
 
 object Notifications {
@@ -83,6 +84,92 @@ object Notifications {
             }
         }
     }
+
+    // ---------- 自定义事件：每个事件可以有自己的铃声 ----------
+
+    /** 事件通知的基础渠道（未指定铃声时使用）。 */
+    const val CHANNEL_EVENT = "journal_event"
+
+    /**
+     * 事件渠道 id 由「铃声 + 重要级」决定，而不是一个事件一个渠道。
+     *
+     * 原因是 Android 的硬约束：**渠道的声音在创建后不可修改**。想给每个事件不同铃声，
+     * 只能让铃声不同的通知走不同渠道。按铃声去重而不是按事件去重，
+     * 是因为「一个事件一个渠道」会让渠道列表随事件数无限膨胀，
+     * 而铃声种类通常只有个位数——同铃声的事件共用一个渠道，行为完全一致。
+     */
+    fun eventChannelId(soundUri: String, importance: String): String {
+        if (soundUri.isEmpty() || soundUri == SOUND_SILENT) return CHANNEL_EVENT
+        return "journal_event_${importance}_${soundUri.hashCode().toUInt().toString(16)}"
+    }
+
+    /**
+     * 确保事件所需渠道存在。返回该事件应使用的渠道 id。
+     *
+     * 渠道名带上铃声名，用户在系统设置里能看出「哪个渠道是哪个铃声」，
+     * 而不是面对一串哈希。
+     */
+    fun ensureEventChannel(context: Context, soundUri: String, soundLabel: String, importance: String): String {
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return CHANNEL_EVENT
+        val id = eventChannelId(soundUri, importance)
+        if (manager.getNotificationChannel(id) != null) return id
+        val level = if (importance == "high") NotificationManager.IMPORTANCE_HIGH else NotificationManager.IMPORTANCE_DEFAULT
+        val channel = NotificationChannel(
+            id,
+            if (soundUri.isEmpty()) "事件提醒" else "事件提醒 · ${soundLabel.ifBlank { "自定义铃声" }}",
+            level,
+        ).apply {
+            description = "日历事件的定时提醒"
+            when (soundUri) {
+                SOUND_SILENT -> setSound(null, null)
+                "" -> {} // 跟随渠道默认
+                else -> runCatching {
+                    setSound(
+                        Uri.parse(soundUri),
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_NOTIFICATION_EVENT)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .build(),
+                    )
+                }
+            }
+        }
+        manager.createNotificationChannel(channel)
+        return id
+    }
+
+    /** 事件提醒通知。每个事件一个通知槽，互不覆盖。 */
+    fun showEvent(context: Context, event: EventEntity, body: String) {
+        val channelId = ensureEventChannel(context, event.soundUri, event.soundLabel, event.importance)
+        val notificationId = 30_000 + event.id.toInt()
+        val pending = PendingIntent.getActivity(
+            context,
+            notificationId,
+            Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                putExtra(EXTRA_OPEN_EVENT_ID, event.id)
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val whenText = runCatching {
+            java.text.SimpleDateFormat("M月d日 HH:mm", java.util.Locale.CHINA)
+                .format(java.util.Date(event.startAt))
+        }.getOrDefault("")
+        val notification = NotificationCompat.Builder(context, channelId)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(event.title)
+            .setContentText(body.ifBlank { whenText })
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body.ifBlank { whenText }))
+            .setContentIntent(pending)
+            .setAutoCancel(true)
+            .apply { if (event.importance == "high") setPriority(NotificationCompat.PRIORITY_HIGH) }
+            .build()
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return
+        manager.notify(notificationId, notification)
+    }
+
+    /** 点击事件通知后要打开的条目。 */
+    const val EXTRA_OPEN_EVENT_ID = "app.moshu.journal.OPEN_EVENT_ID"
 
     fun showReminder(context: Context, text: String) {
         ensureChannel(context)
