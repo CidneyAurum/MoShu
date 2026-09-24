@@ -1,5 +1,6 @@
 package app.moshu.journal.ui.calendar
 
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -8,7 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -25,6 +27,8 @@ import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.ExpandLess
+import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Event
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.RadioButtonUnchecked
@@ -47,12 +51,15 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -102,6 +109,14 @@ fun CalendarScreen(
     var creating by remember { mutableStateOf(false) }
     /** 解析结果不满意时带进完整编辑器。 */
     var manualDraft by remember { mutableStateOf<EventIntentParser.Intent?>(null) }
+    val listState = rememberLazyListState()
+    // 月网格默认展开，列表一往上滚就收起成一周；滚回顶部自动展开。
+    // 用户手动点过开关之后以他的选择为准，直到列表回到顶部——否则「我明明收起来了，
+    // 手一滑它又弹开」会让人以为开关坏了。
+    var manualExpanded by rememberSaveable { mutableStateOf<Boolean?>(null) }
+    val atTop by remember { derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0 } }
+    LaunchedEffect(atTop) { if (atTop) manualExpanded = null }
+    val collapsed = manualExpanded?.not() ?: !atTop
 
     Column(modifier.fillMaxSize()) {
         MoShuPageHeader(
@@ -165,6 +180,8 @@ fun CalendarScreen(
             month = state.month,
             selected = state.selectedDay,
             countsByDay = state.countsByDay,
+            collapsed = collapsed,
+            onToggleCollapsed = { manualExpanded = collapsed },
             onPrev = { viewModel.showMonth(state.month.minusMonths(1)) },
             onNext = { viewModel.showMonth(state.month.plusMonths(1)) },
             onSelect = viewModel::selectDay,
@@ -178,6 +195,7 @@ fun CalendarScreen(
         }
 
         LazyColumn(
+            state = listState,
             modifier = Modifier.weight(1f),
             contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -399,12 +417,19 @@ private fun IntentConfirmCard(
  *
  * 用「周一起始」而不是系统默认：中文习惯周一是一周第一天，
  * 用周日起始会让「这周」的直觉对不上。
+ *
+ * 可以收起成一行：一个月 6 行格子会把当天的安排挤到屏幕外，
+ * 而「今天要做什么」才是这一页真正要回答的问题。
+ * 收起时保留「选中那天所在的那一周」，而不是永远显示第一周——
+ * 看下半月的日子时显示第一周等于什么都没显示。
  */
 @Composable
 private fun MonthGrid(
     month: YearMonth,
     selected: LocalDate,
     countsByDay: Map<LocalDate, Int>,
+    collapsed: Boolean,
+    onToggleCollapsed: () -> Unit,
     onPrev: () -> Unit,
     onNext: () -> Unit,
     onSelect: (LocalDate) -> Unit,
@@ -416,6 +441,18 @@ private fun MonthGrid(
     val days = month.lengthOfMonth()
     val cells = leading + days
     val rows = (cells + 6) / 7
+    val selectedRow = (leading + selected.dayOfMonth - 1) / 7
+
+    // 格子高度固定而不是 aspectRatio(1f)：正方格在手机上每行近 50dp，
+    // 六行就是小半个屏幕，正是「日历占了大半界面」的来源。
+    val rowHeight = 40.dp
+    val rowGap = 2.dp
+    val firstVisibleRow = if (collapsed) selectedRow else 0
+    val visibleRows = if (collapsed) 1 else rows
+    val visibleHeight by animateDpAsState(
+        rowHeight * visibleRows + rowGap * (visibleRows - 1),
+        label = "月网格高度",
+    )
 
     Card(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
@@ -431,6 +468,13 @@ private fun MonthGrid(
                     modifier = Modifier.weight(1f),
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 )
+                // 展开/收起不只是滚动联动的副作用，也要能直接点。
+                IconButton(onClick = onToggleCollapsed) {
+                    Icon(
+                        if (collapsed) Icons.Rounded.ExpandMore else Icons.Rounded.ExpandLess,
+                        contentDescription = if (collapsed) "展开整月" else "收起为一周",
+                    )
+                }
                 IconButton(onClick = onNext) { Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, "下个月") }
             }
             Row(Modifier.fillMaxWidth()) {
@@ -444,23 +488,30 @@ private fun MonthGrid(
                     )
                 }
             }
-            for (row in 0 until rows) {
-                Row(Modifier.fillMaxWidth()) {
-                    for (col in 0 until 7) {
-                        val index = row * 7 + col
-                        val dayNumber = index - leading + 1
-                        if (dayNumber < 1 || dayNumber > days) {
-                            Spacer(Modifier.weight(1f).aspectRatio(1f))
-                        } else {
-                            val day = month.atDay(dayNumber)
-                            DayCell(
-                                day = day,
-                                count = countsByDay[day] ?: 0,
-                                isSelected = day == selected,
-                                isToday = day == today,
-                                onClick = { onSelect(day) },
-                                modifier = Modifier.weight(1f),
-                            )
+            // 收起时只渲染「选中那天所在的那一周」，容器高度做动画。
+            // 不用「渲染全部再位移裁切」：那样内层要显式超出父容器，约束一层层传下去很容易压扁，
+            // 实测会得到一片空白。少渲染几行也更省。
+            Box(Modifier.fillMaxWidth().height(visibleHeight).clipToBounds()) {
+                Column(verticalArrangement = Arrangement.spacedBy(rowGap)) {
+                    for (row in firstVisibleRow until firstVisibleRow + visibleRows) {
+                        Row(Modifier.fillMaxWidth()) {
+                            for (col in 0 until 7) {
+                                val index = row * 7 + col
+                                val dayNumber = index - leading + 1
+                                if (dayNumber < 1 || dayNumber > days) {
+                                    Spacer(Modifier.weight(1f).height(rowHeight))
+                                } else {
+                                    val day = month.atDay(dayNumber)
+                                    DayCell(
+                                        day = day,
+                                        count = countsByDay[day] ?: 0,
+                                        isSelected = day == selected,
+                                        isToday = day == today,
+                                        onClick = { onSelect(day) },
+                                        modifier = Modifier.weight(1f).height(rowHeight),
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -489,8 +540,7 @@ private fun DayCell(
     }
     Box(
         modifier = modifier
-            .aspectRatio(1f)
-            .padding(2.dp)
+            .padding(horizontal = 3.dp)
             .background(bg, CircleShape)
             .clickable(onClickLabel = "查看 ${day.monthValue}月${day.dayOfMonth}日 的安排", onClick = onClick),
         contentAlignment = Alignment.Center,
