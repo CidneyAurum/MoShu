@@ -49,6 +49,10 @@ data class RecordUiState(
     val pendingCount: Int = 0,
     /** 首次查询返回之前为 true，避免先闪一下「没有找到相关记忆」。 */
     val loading: Boolean = true,
+    /** 多选导出模式。 */
+    val selecting: Boolean = false,
+    /** 已勾选的条目 id。 */
+    val selectedIds: Set<Long> = emptySet(),
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -56,6 +60,8 @@ class RecordViewModel : ViewModel() {
     private val app = MoShuApp.instance
     private val filters = MutableStateFlow(MemoryFilters())
     private val loading = MutableStateFlow(true)
+    private val selecting = MutableStateFlow(false)
+    private val selectedIds = MutableStateFlow<Set<Long>>(emptySet())
 
     private val entries = filters.flatMapLatest { filter ->
         app.journal.observe(
@@ -82,7 +88,9 @@ class RecordViewModel : ViewModel() {
             app.journal.observeAttachments(source.map { it.id }),
             filters,
             app.journal.pendingCount,
-        ) { attachments, filter, pending ->
+            selecting,
+            selectedIds,
+        ) { attachments, filter, pending, inSelection, ids ->
             // 搜索时也要遵守分类筛选：否则「工作」筛选块显示为选中，
             // 结果里却混着所有分类，用户看到的和选中的对不上。
             val visible = source.filter { entry ->
@@ -93,7 +101,15 @@ class RecordViewModel : ViewModel() {
                     (!filter.starredOnly || entry.isStarred) &&
                     (filter.day == null || entryDay(entry) == filter.day)
             }
-            RecordUiState(sortEntries(visible, filter.sort), attachments.groupBy { it.entryId }, filter, pending, loading.value)
+            RecordUiState(
+                sortEntries(visible, filter.sort),
+                attachments.groupBy { it.entryId },
+                filter,
+                pending,
+                loading.value,
+                inSelection,
+                ids,
+            )
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), RecordUiState())
 
@@ -164,6 +180,41 @@ class RecordViewModel : ViewModel() {
                 viewModelScope.launch { app.journal.restoreEntry(deleted) }
             }
         }
+    }
+
+    // ---- 多选导出 ----
+
+    fun enterSelection() {
+        selecting.value = true
+    }
+
+    /** 退出多选时必须清空勾选：否则下次进来还残留上一次的选择，导出内容会多出没勾过的条目。 */
+    fun exitSelection() {
+        selecting.value = false
+        selectedIds.value = emptySet()
+    }
+
+    fun toggleSelected(id: Long) {
+        selectedIds.value = if (id in selectedIds.value) selectedIds.value - id else selectedIds.value + id
+    }
+
+    /** 全选/取消全选当前可见的条目（受筛选影响，只操作看得见的那些）。 */
+    fun toggleSelectAllVisible() {
+        val visible = uiState.value.entries.map { it.id }.toSet()
+        val allSelected = visible.isNotEmpty() && selectedIds.value.containsAll(visible)
+        selectedIds.value = if (allSelected) selectedIds.value - visible else selectedIds.value + visible
+    }
+
+    /**
+     * 取要导出的条目。
+     *
+     * 直接按 id 回库查，而不是从当前列表里过滤：用户可以先勾几条、再改筛选条件、再勾几条，
+     * 只从可见列表取会让先勾的那批静默消失。
+     */
+    suspend fun selectedForExport(): List<EntryEntity> {
+        val ids = selectedIds.value.toList()
+        if (ids.isEmpty()) return emptyList()
+        return app.database.entryDao().byIdsOnce(ids)
     }
 }
 

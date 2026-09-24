@@ -8,6 +8,8 @@ import app.moshu.journal.ai.AiClient
 import app.moshu.journal.ai.AiConfig
 import app.moshu.journal.ai.Enricher
 import app.moshu.journal.ai.Hosts
+import app.moshu.journal.data.backup.AutoBackup
+import app.moshu.journal.data.backup.AutoBackupWorker
 import app.moshu.journal.data.backup.BackupManager
 import app.moshu.journal.data.settings.AiUsage
 import app.moshu.journal.reminder.TodoReminderWorker
@@ -16,7 +18,19 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
+
+/** 一份本机自动备份。只暴露展示需要的字段，界面不碰 File。 */
+data class AutoBackupInfo(val name: String, val sizeBytes: Long, val at: Long)
+
+data class AutoBackupState(
+    val enabled: Boolean = false,
+    val busy: Boolean = false,
+    /** 最新的在前。 */
+    val backups: List<AutoBackupInfo> = emptyList(),
+)
 
 data class SettingsUiState(
     val templates: List<AiConfig.Template> = AiConfig.TEMPLATES,
@@ -64,6 +78,8 @@ class SettingsViewModel : ViewModel() {
     private val message = MutableStateFlow("" to false)
     private val dataBusy = MutableStateFlow(false)
     private val dataMessage = MutableStateFlow("")
+    private val backupRefresh = MutableStateFlow(0)
+    private val backingUp = MutableStateFlow(false)
 
     data class Draft(
         val baseUrl: String = "",
@@ -96,6 +112,19 @@ class SettingsViewModel : ViewModel() {
         Peripheral(enabled, time.first, time.second, sound, theme, dynamic)
     }
     private val dataState = combine(dataBusy, dataMessage) { busy, note -> DataState(busy, note) }
+
+    /** 本机自动备份的开关与已有备份列表。 */
+    val autoBackup: StateFlow<AutoBackupState> =
+        combine(settings.autoBackupEnabled, backupRefresh, backingUp) { enabled, _, busy ->
+            AutoBackupState(
+                enabled = enabled,
+                busy = busy,
+                backups = AutoBackup.list(app).map { file ->
+                    AutoBackupInfo(name = file.name, sizeBytes = file.length(), at = file.lastModified())
+                },
+            )
+        }.flowOn(Dispatchers.IO)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AutoBackupState())
 
     val uiState: StateFlow<SettingsUiState> = combine(core, peripheral, dataState, settings.keyUnreadable, settings.aiUsage) { c, p, data, unreadable, usage ->
         SettingsUiState(
@@ -374,6 +403,63 @@ class SettingsViewModel : ViewModel() {
 
     fun exportBackup(uri: Uri) = runDataTask("备份已导出；文件未加密，请妥善保管") { BackupManager.exportBackup(app, app.database, uri) }
     fun exportMarkdown(uri: Uri) = runDataTask("Markdown 已导出") { BackupManager.exportMarkdown(app, app.database, uri) }
+
+    /**
+     * 开关自动备份。
+     *
+     * 打开时顺手立刻备份一份：否则用户要等一整天才能看到列表里出现第一条，
+     * 很容易以为开关没生效。
+     */
+    fun setAutoBackup(enabled: Boolean) {
+        viewModelScope.launch {
+            settings.saveAutoBackup(enabled)
+            AutoBackupWorker.sync(app, enabled)
+            if (enabled) backupNow()
+        }
+    }
+
+    /** 立即备份一次。写临时文件再改名，中途被取消不会留下半截的「最新备份」。 */
+    fun backupNow() {
+        if (backingUp.value) return
+        viewModelScope.launch {
+            backingUp.value = true
+            dataMessage.value = ""
+            try {
+                val file = AutoBackup.runOnce(app, app.database)
+                dataMessage.value = "已备份到本机：${file.name}（${file.length() / 1024} KB）"
+            } catch (error: Exception) {
+                dataMessage.value = "备份失败：${error.message ?: "文件不可写"}"
+            } finally {
+                backingUp.value = false
+                backupRefresh.value++
+            }
+        }
+    }
+
+    /** 用某一份自动备份恢复。会先按名字回到私有目录，找不到就当失败，不做静默降级。 */
+    fun restoreAutoBackup(name: String, replace: Boolean) {
+        val file = AutoBackup.list(app).firstOrNull { it.name == name }
+        if (file == null) {
+            dataMessage.value = "这份备份已经不在了，请刷新后重试。"
+            return
+        }
+        viewModelScope.launch {
+            dataBusy.value = true
+            dataMessage.value = ""
+            try {
+                val result = AutoBackup.restore(app, app.database, file, replace) { stage -> dataMessage.value = stage }
+                app.database.todoDao().allOnce().filter { !it.done && it.reminderAt != null }.forEach { TodoReminderWorker.schedule(app, it) }
+                dataMessage.value = buildString {
+                    append("恢复完成：${result.entries} 条记忆、${result.todos} 个行动、${result.images} 张图片")
+                    if (result.skippedImages > 0) append("；另有 ${result.skippedImages} 张图片在备份中缺失，未能恢复")
+                }
+            } catch (error: Exception) {
+                dataMessage.value = "恢复失败：${error.message ?: "备份文件不可读"}"
+            } finally {
+                dataBusy.value = false
+            }
+        }
+    }
     fun restore(uri: Uri, replace: Boolean) = runDataTask("") {
         val result = BackupManager.restore(app, app.database, uri, replace) { stage -> dataMessage.value = stage }
         app.database.todoDao().allOnce().filter { !it.done && it.reminderAt != null }.forEach { TodoReminderWorker.schedule(app, it) }

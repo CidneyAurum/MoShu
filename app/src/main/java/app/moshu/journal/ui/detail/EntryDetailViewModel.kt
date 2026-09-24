@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -92,6 +93,22 @@ class EntryDetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel() {
             app.journal.togglePinned(entry)
         }
     }
+
+    /**
+     * 当前条目在「全部记忆」里的前后邻居，供左右滑动切换。
+     *
+     * 用 observeAll 而不是把列表传进来：详情页可能从通知、分享、搜索等任意入口打开，
+     * 调用方未必持有完整列表。置顶条目的排序与列表页保持一致（置顶在前），
+     * 否则滑动的顺序和用户在列表里看到的顺序对不上。
+     */
+    val neighbors: StateFlow<Pair<EntryEntity?, EntryEntity?>> =
+        app.database.entryDao().observeAll()
+            .map { all ->
+                val index = all.indexOfFirst { it.id == entryId }
+                if (index < 0) null to null
+                else all.getOrNull(index - 1) to all.getOrNull(index + 1)
+            }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null to null)
 
     fun toggleStarred() {
         viewModelScope.launch {

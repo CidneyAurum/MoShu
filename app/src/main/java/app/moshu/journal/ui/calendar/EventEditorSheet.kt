@@ -44,6 +44,7 @@ import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -115,7 +116,7 @@ fun EventEditorSheet(
         )
     }
     var minuteOfDay by remember {
-        mutableStateOf(
+        mutableIntStateOf(
             initialEvent?.let {
                 val t = Instant.ofEpochMilli(it.startAt).atZone(zone).toLocalTime()
                 t.hour * 60 + t.minute
@@ -125,7 +126,7 @@ fun EventEditorSheet(
     var allDay by remember { mutableStateOf(initialEvent?.allDay ?: initialIntent?.allDay ?: false) }
     var repeat by remember { mutableStateOf(initialEvent?.repeatRule ?: initialIntent?.repeat ?: RepeatRule.NONE) }
     var reminderOffset by remember {
-        mutableStateOf(initialEvent?.reminderOffsetMin ?: initialIntent?.reminderOffsetMin ?: EventEntity.NO_REMINDER)
+        mutableIntStateOf(initialEvent?.reminderOffsetMin ?: initialIntent?.reminderOffsetMin ?: EventEntity.NO_REMINDER)
     }
     var soundUri by remember { mutableStateOf(initialEvent?.soundUri.orEmpty()) }
     var soundLabel by remember { mutableStateOf(initialEvent?.soundLabel.orEmpty()) }

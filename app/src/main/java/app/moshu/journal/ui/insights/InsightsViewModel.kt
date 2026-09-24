@@ -43,6 +43,9 @@ import java.util.Locale
 
 data class MoodPoint(val day: Int, val score: Double?, val count: Int)
 
+/** 全年热力图的一格：某一天写了多少条。 */
+data class YearDay(val date: LocalDate, val count: Int)
+
 /** 对话气泡状态。PENDING 表示问题已发出但还没收尾，进程死亡或离开页面后会被降级为 INTERRUPTED。 */
 enum class TurnStatus { NORMAL, PENDING, INTERRUPTED }
 
@@ -228,6 +231,30 @@ class InsightsViewModel : ViewModel() {
         .map { app.journal.moodTagCorrelation() }
         .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /**
+     * 全年活跃热力图。同样是全库口径，不跟月份切换走，所以也放在大 combine 之外。
+     * 范围从「本周一往前推满 52 周」到今天，保证每列都是完整的周一到周日，
+     * 否则最后一列会缺几天，热力图看着像被啃掉一块。
+     */
+    val yearHeatmap: StateFlow<List<YearDay>> = run {
+        val zone = ZoneId.systemDefault()
+        val today = LocalDate.now(zone)
+        val start = YearActivity.startOfDay(YearActivity.firstMonday(today), zone)
+        val end = YearActivity.startOfDay(today.plusDays(1), zone)
+        dao.observeBetween(start, end)
+            .map { entries ->
+                YearActivity.buckets(
+                    entries.groupingBy { Instant.ofEpochMilli(it.createdAt).atZone(zone).toLocalDate() }.eachCount(),
+                    today,
+                )
+            }
+            .flowOn(Dispatchers.Default)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    }
+
+    /** 今天的日期，热力图上要单独描一圈。 */
+    val today: LocalDate = LocalDate.now(ZoneId.systemDefault())
 
     val uiState: StateFlow<InsightsUiState> = combine(
         stats,

@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -46,6 +47,7 @@ import androidx.compose.material.icons.rounded.StarBorder
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -67,6 +69,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -242,17 +245,31 @@ fun EntryCard(
     onRetryAi: (() -> Unit)? = null,
     /** 长按菜单的动作集合；为 null 时卡片只响应单击。 */
     actions: EntryCardActions? = null,
+    /** 多选导出模式下的勾选状态。 */
+    selected: Boolean = false,
+    /** 多选导出模式：整张卡变成一个可勾选项，长按菜单收起。 */
+    selectionMode: Boolean = false,
 ) {
     var menu by remember { mutableStateOf(false) }
-    val interactive = Modifier.combinedClickable(
-        onClick = onClick,
-        onLongClick = if (actions != null) ({ menu = true }) else null,
-        onLongClickLabel = if (actions != null) "更多操作" else null,
-    )
+    // 多选时换成 toggleable + Checkbox 角色，TalkBack 才会读出「复选框，已选中」。
+    // 只摆一个视觉上的方框、点击语义照旧的话，读屏用户根本不知道这张卡能勾。
+    val interactive = if (selectionMode) {
+        Modifier.toggleable(value = selected, role = Role.Checkbox, onValueChange = { onClick() })
+    } else {
+        Modifier.combinedClickable(
+            onClick = onClick,
+            onLongClick = if (actions != null) ({ menu = true }) else null,
+            onLongClickLabel = if (actions != null) "更多操作" else null,
+        )
+    }
     Box(modifier) {
         Card(
             modifier = Modifier.fillMaxWidth()
-                .border(0.6.dp, MaterialTheme.colorScheme.outlineVariant, MaterialTheme.shapes.large)
+                .border(
+                    0.6.dp,
+                    if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                    MaterialTheme.shapes.large,
+                )
                 .then(interactive),
             shape = MaterialTheme.shapes.large,
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -260,6 +277,10 @@ fun EntryCard(
         ) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (selectionMode) {
+                        Checkbox(checked = selected, onCheckedChange = null, modifier = Modifier.size(24.dp))
+                        Spacer(Modifier.width(8.dp))
+                    }
                     Box(Modifier.size(8.dp).background(CategoryColors.getOrElse(entry.categoryId) { CategoryColors[0] }, CircleShape))
                     Spacer(Modifier.width(7.dp))
                     Text(Category.nameOf(entry.categoryId), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)

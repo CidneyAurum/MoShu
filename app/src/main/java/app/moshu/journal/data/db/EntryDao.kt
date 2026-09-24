@@ -98,6 +98,10 @@ interface EntryDao {
     @Query("SELECT COUNT(*) FROM entries WHERE deletedAt = 0 AND aiPromptVersion < :promptVersion")
     suspend fun countOutdated(promptVersion: Int): Int
 
+    /** 批量导出用。按时间正序，导出的文件就是一份按日期排好的流水。 */
+    @Query("SELECT * FROM entries WHERE id IN (:ids) ORDER BY createdAt ASC")
+    suspend fun byIdsOnce(ids: List<Long>): List<EntryEntity>
+
     @Query("DELETE FROM entries WHERE id = :id") suspend fun deleteById(id: Long)
     @Query("DELETE FROM entries") suspend fun deleteAll()
 }

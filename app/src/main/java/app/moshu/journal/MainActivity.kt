@@ -477,7 +477,16 @@ private fun AppNavHost(
                 route = Routes.ENTRY,
                 arguments = listOf(navArgument("entryId") { type = NavType.LongType }),
             ) {
-                EntryDetailScreen(viewModel<EntryDetailViewModel>(), onBack = { navController.popBackStack() })
+                EntryDetailScreen(
+                    viewModel<EntryDetailViewModel>(),
+                    onBack = { navController.popBackStack() },
+                    // 替换当前详情页而不是压栈，否则连翻二十条会在返回栈里堆二十层。
+                    onOpenSibling = {
+                        navController.navigate(Routes.entry(it)) {
+                            popUpTo(Routes.ENTRY) { inclusive = true }
+                        }
+                    },
+                )
             }
         }
     }

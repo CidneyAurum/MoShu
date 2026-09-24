@@ -162,6 +162,10 @@ object Notifications {
             .setStyle(NotificationCompat.BigTextStyle().bigText(body.ifBlank { whenText }))
             .setContentIntent(pending)
             .setAutoCancel(true)
+            // 通知上直接处理：打开应用再找那件事的成本太高，多数人会直接划掉通知。
+            .addAction(0, "完成", eventAction(context, event, EventActionReceiver.ACTION_DONE, notificationId))
+            .addAction(0, "1 小时后", eventAction(context, event, EventActionReceiver.ACTION_SNOOZE_HOUR, notificationId + 1))
+            .addAction(0, "明天 9 点", eventAction(context, event, EventActionReceiver.ACTION_SNOOZE_TOMORROW, notificationId + 2))
             .apply { if (event.importance == "high") setPriority(NotificationCompat.PRIORITY_HIGH) }
             .build()
         val manager = context.getSystemService(NotificationManager::class.java) ?: return
@@ -170,6 +174,24 @@ object Notifications {
 
     /** 点击事件通知后要打开的条目。 */
     const val EXTRA_OPEN_EVENT_ID = "app.moshu.journal.OPEN_EVENT_ID"
+
+    /** 事件通知上的动作按钮。requestCode 必须互不相同，否则三个按钮会共用一个 PendingIntent。 */
+    private fun eventAction(context: Context, event: EventEntity, action: String, requestCode: Int): android.app.PendingIntent =
+        android.app.PendingIntent.getBroadcast(
+            context,
+            requestCode,
+            Intent(context, EventActionReceiver::class.java).apply {
+                putExtra(EventActionReceiver.EXTRA_EVENT_ID, event.id)
+                putExtra(EventActionReceiver.EXTRA_ACTION, action)
+            },
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE,
+        )
+
+    /** 用户已在通知上处理过（完成/推迟）时，把原通知撤掉，避免它继续挂着。 */
+    fun cancelEvent(context: Context, event: EventEntity) {
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return
+        runCatching { manager.cancel(30_000 + event.id.toInt()) }
+    }
 
     fun showReminder(context: Context, text: String) {
         ensureChannel(context)

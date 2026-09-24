@@ -21,6 +21,7 @@ import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.EditNote
 import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.LibraryAddCheck
 import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SearchOff
@@ -28,6 +29,8 @@ import androidx.compose.material.icons.rounded.Star
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.ImeAction
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DatePicker
@@ -50,15 +53,22 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.material3.Button
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.moshu.journal.MoShuApp
 import app.moshu.journal.data.db.Category
+import app.moshu.journal.data.export.MarkdownExport
 import app.moshu.journal.ui.components.EntryCard
 import app.moshu.journal.ui.components.EntryCardActions
 import app.moshu.journal.ui.components.MOOD_OPTIONS
 import app.moshu.journal.ui.components.MoShuEmptyState
 import app.moshu.journal.ui.components.MoShuPageHeader
 import app.moshu.journal.ui.components.shareEntry
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -76,23 +86,68 @@ fun MemoryScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val filtering = state.filters.active
     val recentSearches by viewModel.recentSearches.collectAsStateWithLifecycle()
     var pickingDay by remember { mutableStateOf(false) }
 
+    // 批量导出：多选之后写成一个 Markdown 文件。
+    val exportSelection = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/markdown")) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val picked = viewModel.selectedForExport()
+            if (picked.isEmpty()) return@launch
+            val ok = runCatching {
+                withContext(Dispatchers.IO) {
+                    context.contentResolver.openOutputStream(uri, "wt")?.use { out ->
+                        out.write(MarkdownExport.bundle(picked).toByteArray(Charsets.UTF_8))
+                    } ?: error("无法写入所选文件")
+                }
+            }.isSuccess
+            if (ok) {
+                // 导出成功后退出多选：留着满屏勾选状态，用户会以为还没开始导出。
+                viewModel.exitSelection()
+                MoShuApp.instance.notices.post("已导出 ${picked.size} 条记忆")
+            } else {
+                MoShuApp.instance.notices.post("导出失败，请换个位置再试")
+            }
+        }
+    }
+
     Column(modifier.fillMaxSize()) {
         if (state.pendingCount > 0) LinearProgressIndicator(Modifier.fillMaxWidth())
-        MoShuPageHeader(
-            title = "记忆",
-            // 搜索/筛选时显示命中数，否则用户看不出筛选是否生效。
-            subtitle = if (filtering) "找到 ${state.entries.size} 条" else "${state.entries.size} 条正在被记住",
-            onSettings = onSettings,
-            actions = {
-                IconButton(onClick = viewModel::toggleSearch) {
-                    Icon(if (state.filters.searchMode) Icons.Rounded.Close else Icons.Rounded.Search, contentDescription = "搜索")
-                }
-            },
-        )
+        if (state.selecting) {
+            SelectionBar(
+                count = state.selectedIds.size,
+                allSelected = state.entries.isNotEmpty() && state.selectedIds.containsAll(state.entries.map { it.id }),
+                onClose = viewModel::exitSelection,
+                onToggleAll = viewModel::toggleSelectAllVisible,
+                onExport = {
+                    // 文件名先按当前勾选算，用户还能在系统保存框里改。
+                    scope.launch {
+                        val picked = viewModel.selectedForExport()
+                        if (picked.isNotEmpty()) exportSelection.launch(MarkdownExport.bundleFileName(picked))
+                    }
+                },
+            )
+        } else {
+            MoShuPageHeader(
+                title = "记忆",
+                // 搜索/筛选时显示命中数，否则用户看不出筛选是否生效。
+                subtitle = if (filtering) "找到 ${state.entries.size} 条" else "${state.entries.size} 条正在被记住",
+                onSettings = onSettings,
+                actions = {
+                    if (state.entries.isNotEmpty()) {
+                        IconButton(onClick = viewModel::enterSelection) {
+                            Icon(Icons.Rounded.LibraryAddCheck, contentDescription = "批量导出")
+                        }
+                    }
+                    IconButton(onClick = viewModel::toggleSearch) {
+                        Icon(if (state.filters.searchMode) Icons.Rounded.Close else Icons.Rounded.Search, contentDescription = "搜索")
+                    }
+                },
+            )
+        }
         AnimatedVisibility(state.filters.searchMode) {
             OutlinedTextField(
                 value = state.filters.query,
@@ -264,11 +319,16 @@ fun MemoryScreen(
                         }
                     }
                     items(dayEntries, key = { it.id }) { entry ->
+                        val checked = entry.id in state.selectedIds
                         EntryCard(
                             entry = entry,
-                            onClick = { onOpenEntry(entry.id) },
+                            onClick = {
+                                if (state.selecting) viewModel.toggleSelected(entry.id) else onOpenEntry(entry.id)
+                            },
                             attachments = state.attachments[entry.id].orEmpty(),
-                            actions = EntryCardActions(
+                            selectionMode = state.selecting,
+                            selected = checked,
+                            actions = if (state.selecting) null else EntryCardActions(
                                 onEdit = { onOpenEntry(entry.id) },
                                 onDuplicate = { viewModel.duplicate(entry) },
                                 onTogglePin = { viewModel.togglePinned(entry) },
@@ -309,6 +369,38 @@ fun MemoryScreen(
 
 /** 情绪筛选块直接取自共用的 MOOD_OPTIONS，避免与详情页编辑器、卡片表情各写一份。 */
 private val MOOD_FILTERS = MOOD_OPTIONS
+
+/**
+ * 多选模式的顶栏，替换掉常规页头。
+ *
+ * 「全选」只作用于当前筛选出的可见条目，所以文案里点明这一点——
+ * 否则用户会以为全选是「全库全选」，导出后数量对不上就会觉得丢数据了。
+ */
+@Composable
+private fun SelectionBar(
+    count: Int,
+    allSelected: Boolean,
+    onClose: () -> Unit,
+    onToggleAll: () -> Unit,
+    onExport: () -> Unit,
+) {
+    Surface(color = MaterialTheme.colorScheme.surfaceVariant, tonalElevation = 2.dp) {
+        Row(
+            Modifier.fillMaxWidth().padding(start = 4.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onClose) { Icon(Icons.Rounded.Close, contentDescription = "退出多选") }
+            Column(Modifier.weight(1f)) {
+                Text("已选 $count 条", style = MaterialTheme.typography.titleMedium)
+                Text("全选只针对当前筛选出的记忆", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            TextButton(onClick = onToggleAll, modifier = Modifier.heightIn(min = 48.dp)) {
+                Text(if (allSelected) "取消全选" else "全选")
+            }
+            Button(onClick = onExport, enabled = count > 0) { Text("导出") }
+        }
+    }
+}
 
 private val EntrySort.label: String
     get() = when (this) {

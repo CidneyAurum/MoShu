@@ -3,6 +3,8 @@ package app.moshu.journal
 import android.app.Application
 import app.moshu.journal.ai.EnrichmentWorker
 import app.moshu.journal.data.NoticeBus
+import app.moshu.journal.data.backup.AutoBackup
+import app.moshu.journal.data.backup.AutoBackupWorker
 import app.moshu.journal.data.db.AppDatabase
 import app.moshu.journal.data.db.EntryAiState
 import app.moshu.journal.data.JournalRepository
@@ -46,6 +48,22 @@ class MoShuApp : Application() {
         purgeExpiredTrash()
         recoverInterruptedEnrichments()
         restoreReminders()
+        syncAutoBackup()
+    }
+
+    /**
+     * 按已保存的开关重新落地自动备份排期。
+     *
+     * WorkManager 的周期任务能扛住重启，但用户清过应用数据、或系统回收过任务队列之后就没了；
+     * 只在开关变化时排期的话，用户会以为开着却再也没备份过。
+     */
+    private fun syncAutoBackup() {
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            runCatching {
+                AutoBackup.clearTemps(this@MoShuApp)
+                AutoBackupWorker.sync(this@MoShuApp, settings.autoBackupEnabled.first())
+            }
+        }
     }
 
     /**

@@ -49,7 +49,10 @@ class EventReminderReceiver : BroadcastReceiver() {
                 Notifications.showEvent(context, event, body)
 
                 // 重复事件：排下一次。一次性事件保持原样，由用户自己勾完成。
-                if (event.repeatRule != RepeatRule.NONE) {
+                // 推迟触发的提醒（isSnooze）不推进重复规则——它只是「晚点再说」，
+                // 若也推进，用户点一次推迟就会把每周事件跳到下一周。
+                val isSnooze = intent.getBooleanExtra(EXTRA_IS_SNOOZE, false)
+                if (!isSnooze && event.repeatRule != RepeatRule.NONE) {
                     val next = RepeatRule.nextAfter(event, now, zone)
                     if (next != null) {
                         val advanced = event.copy(startAt = next, updatedAt = now)
@@ -68,5 +71,8 @@ class EventReminderReceiver : BroadcastReceiver() {
 
     companion object {
         const val EXTRA_EVENT_ID = "event_id"
+
+        /** 标记这次触发来自「推迟」，不要推进重复规则。 */
+        const val EXTRA_IS_SNOOZE = "is_snooze"
     }
 }

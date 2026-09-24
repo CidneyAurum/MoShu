@@ -26,6 +26,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Save
+import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Archive
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.ChevronRight
@@ -78,6 +80,8 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import java.util.Date
+import java.text.SimpleDateFormat
 import app.moshu.journal.BuildConfig
 import app.moshu.journal.ai.Hosts
 import app.moshu.journal.ai.UrlNormalizer
@@ -102,6 +106,7 @@ fun SettingsScreen(
     onOpenTrash: () -> Unit = {},
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val autoBackup by viewModel.autoBackup.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var showAdvanced by remember { mutableStateOf(false) }
@@ -111,6 +116,8 @@ fun SettingsScreen(
     var modelFilter by remember { mutableStateOf("") }
     var restoreUri by remember { mutableStateOf<Uri?>(null) }
     var replaceUri by remember { mutableStateOf<Uri?>(null) }
+    // 从自动备份恢复前要先问「覆盖还是合并」，和文件恢复同一套确认框。
+    var pendingRestoreName by remember { mutableStateOf<String?>(null) }
     val apiKeyFocus = remember { FocusRequester() }
     // 校验失败时把焦点移到 API Key 输入框，否则用户只看到一条提示却不知道该改哪里。
     LaunchedEffect(state.apiKeyError) {
@@ -394,6 +401,14 @@ fun SettingsScreen(
             }
         }
         item {
+            AutoBackupCard(
+                state = autoBackup,
+                onToggle = viewModel::setAutoBackup,
+                onBackupNow = viewModel::backupNow,
+                onRestore = { name -> pendingRestoreName = name },
+            )
+        }
+        item {
             SettingsCard("数据", Icons.Rounded.Archive) {
                 Text("数据与图片保存在本机。完整备份不加密，也绝不包含 API Key。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 OutlinedButton(
@@ -525,6 +540,82 @@ fun SettingsScreen(
             confirmButton = { Button(onClick = { viewModel.restore(uri, true); replaceUri = null }) { Text("清空并恢复") } },
             dismissButton = { TextButton(onClick = { replaceUri = null }) { Text("取消") } },
         )
+    }
+    // 从自动备份恢复：和文件恢复一样，先说清楚会动到什么。
+    pendingRestoreName?.let { name ->
+        AlertDialog(
+            onDismissRequest = { pendingRestoreName = null },
+            title = { Text("用这份自动备份恢复？") },
+            text = { Text("$name\n\n选「合并恢复」会跳过已存在的记忆；选「清空并恢复」会先删掉本机现有数据。此操作无法撤销。") },
+            confirmButton = { Button(onClick = { viewModel.restoreAutoBackup(name, false); pendingRestoreName = null }) { Text("合并恢复") } },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = { viewModel.restoreAutoBackup(name, true); pendingRestoreName = null }) {
+                        Text("清空并恢复", color = MaterialTheme.colorScheme.error)
+                    }
+                    TextButton(onClick = { pendingRestoreName = null }) { Text("取消") }
+                }
+            },
+        )
+    }
+}
+
+/**
+ * 本机自动备份。
+ *
+ * 必须写清楚备份存在应用私有目录里、卸载会一起消失，否则用户会把它当成
+ * 「云端备份」，换手机时才发现什么都没了。
+ */
+@Composable
+private fun AutoBackupCard(
+    state: AutoBackupState,
+    onToggle: (Boolean) -> Unit,
+    onBackupNow: () -> Unit,
+    onRestore: (String) -> Unit,
+) {
+    val formatter = remember { SimpleDateFormat("M月d日 HH:mm", Locale.CHINA) }
+    SettingsCard("自动备份", Icons.Rounded.History) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("每天自动备份到本机", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "只保留最近 3 份。备份在应用私有目录里，卸载应用会一起删除；要换手机请用上面的「导出完整备份」。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = state.enabled, onCheckedChange = onToggle)
+        }
+        if (state.backups.isEmpty()) {
+            Text(
+                if (state.enabled) "还没有备份，稍等片刻或点「立即备份」。" else "还没有备份。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            state.backups.forEach { backup ->
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(formatter.format(Date(backup.at)), style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            "${backup.sizeBytes / 1024} KB",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    TextButton(onClick = { onRestore(backup.name) }, modifier = Modifier.heightIn(min = 48.dp)) {
+                        Text("恢复")
+                    }
+                }
+            }
+        }
+        OutlinedButton(onClick = onBackupNow, enabled = !state.busy, modifier = Modifier.fillMaxWidth()) {
+            if (state.busy) {
+                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+            } else {
+                Icon(Icons.Rounded.Save, null); Spacer(Modifier.size(8.dp)); Text("立即备份")
+            }
+        }
     }
 }
 

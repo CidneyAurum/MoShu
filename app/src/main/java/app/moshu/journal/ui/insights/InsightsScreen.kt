@@ -3,6 +3,7 @@ package app.moshu.journal.ui.insights
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
@@ -57,6 +58,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -81,9 +83,11 @@ import app.moshu.journal.ui.components.moodLabel
 import app.moshu.journal.ui.theme.AzureBlue
 import app.moshu.journal.ui.theme.CategoryColors
 import java.text.SimpleDateFormat
+import java.time.LocalDate
 import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 
 @Composable
 fun InsightsScreen(
@@ -95,10 +99,15 @@ fun InsightsScreen(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val writingStats by viewModel.writingStats.collectAsStateWithLifecycle()
     val moodTags by viewModel.moodTags.collectAsStateWithLifecycle()
+    val yearDays by viewModel.yearHeatmap.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
     var confirmClearChat by remember { mutableStateOf(false) }
-    // 消息项之前固定有 4 个卡片/标题，外加加载态与空状态两项可能占位。
-    val headerItems = 4 + (if (state.loading) 1 else 0) + (if (!state.loading && state.entryCount == 0) 1 else 0) + (if (writingStats?.totalEntries == 0) 0 else 1)
+    // 消息项之前固定有 4 个卡片（月度、全年、写作、记忆分布）加「问墨枢」标题，
+    // 外加加载态、空状态、标签卡三项可能占位。之前漏算了标签卡，有标签时跳转会停错位置。
+    val headerItems = 5 +
+        (if (state.loading) 1 else 0) +
+        (if (!state.loading && state.entryCount == 0) 1 else 0) +
+        (if (moodTags.isNotEmpty()) 1 else 0)
     // 只在消息数增长时滚到最后一条；原先监听 asking 会在回答还没生成时就跳走。
     LaunchedEffect(state.messages.size) {
         val size = state.messages.size
@@ -155,6 +164,14 @@ fun InsightsScreen(
                             MonthHeatmap(state.activityCounts, state.firstDayOffset)
                         }
                         MoodChart(state.points)
+                    }
+                }
+            }
+            item {
+                Card(shape = MaterialTheme.shapes.large, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        MoShuSectionTitle("这一年")
+                        YearHeatmap(yearDays, viewModel.today)
                     }
                 }
             }
@@ -583,6 +600,88 @@ private fun MonthHeatmap(counts: List<Int>, firstDayOffset: Int) {
         }
     }
 }
+
+/**
+ * 全年热力图：53 列 × 7 行，每列一周，最后几列是最近几周。
+ *
+ * 一年一定宽过手机屏幕，所以做成横向可滚，并在进页面时自动定位到最右侧（最近），
+ * 否则用户第一眼看到的是一年前的空白格，会以为功能坏了。
+ * 月份标签用 wrapContentWidth(unbounded) 溢出格子宽度来画：月份之间至少隔 4 列，
+ * 不会撞在一起，而给标签预留真正宽度会让整列变宽、格子排不齐。
+ */
+@Composable
+private fun YearHeatmap(days: List<YearDay>, today: LocalDate) {
+    if (days.isEmpty()) return
+    val active = MaterialTheme.colorScheme.primary
+    val idle = MaterialTheme.colorScheme.surfaceVariant
+    val maxCount = days.maxOf { it.count }
+    val weeks = days.chunked(7)
+    val activeDays = days.count { it.count > 0 }
+    val summary = "全年活跃热力图：最近一年 ${activeDays} 天有记录，最多一天 ${maxCount} 条"
+    val scroll = rememberScrollState()
+    LaunchedEffect(weeks.size) {
+        // maxValue 要等布局量完才不是 0，直接 scrollTo 会滚不动。
+        snapshotFlow { scroll.maxValue }.first { it > 0 }
+        scroll.scrollTo(scroll.maxValue)
+    }
+    val cell = 11.dp
+    val gap = 2.dp
+    val monthLabels = YearActivity.monthLabels(weeks)
+    Column(
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier.fillMaxWidth().semantics { contentDescription = summary },
+    ) {
+        Row(
+            modifier = Modifier.horizontalScroll(scroll),
+            horizontalArrangement = Arrangement.spacedBy(gap),
+        ) {
+            weeks.forEachIndexed { index, week ->
+                Column(verticalArrangement = Arrangement.spacedBy(gap)) {
+                    Box(Modifier.width(cell).height(12.dp)) {
+                        monthLabels[index]?.let { month ->
+                            Text(
+                                "${month}月",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                softWrap = false,
+                                modifier = Modifier.wrapContentWidth(unbounded = true),
+                            )
+                        }
+                    }
+                    week.forEach { day ->
+                        Box(
+                            Modifier
+                                .size(cell)
+                                .background(
+                                    if (day.count == 0) idle else active.copy(alpha = LEVEL_ALPHA[YearActivity.level(day.count, maxCount)]),
+                                    RoundedCornerShape(2.dp),
+                                )
+                                .then(
+                                    // 今天单独描边，否则在一整片格子里找不到「现在」在哪。
+                                    if (day.date == today) Modifier.border(1.dp, MaterialTheme.colorScheme.onSurfaceVariant, RoundedCornerShape(2.dp)) else Modifier,
+                                ),
+                        )
+                    }
+                    // 最后一列可能不满 7 天，补空格子保证所有列顶部对齐。
+                    repeat(7 - week.size) { Spacer(Modifier.size(cell)) }
+                }
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("少", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            LEVEL_ALPHA.forEach { alpha ->
+                Box(Modifier.size(9.dp).background(if (alpha == LEVEL_ALPHA.first()) idle else active.copy(alpha = alpha), RoundedCornerShape(2.dp)))
+            }
+            Text("多", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.weight(1f))
+            Text("共 $activeDays 天有记录", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+/** 0 条是灰色，其余按当天条数分四档。 */
+private val LEVEL_ALPHA = YearActivity.LEVEL_ALPHA
 
 @Composable
 private fun MoodChart(points: List<MoodPoint>) {

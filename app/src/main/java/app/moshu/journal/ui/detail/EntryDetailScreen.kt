@@ -5,6 +5,8 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -83,6 +85,7 @@ import app.moshu.journal.data.db.AttachmentEntity
 import app.moshu.journal.data.db.Category
 import app.moshu.journal.data.db.EntryAiState
 import androidx.compose.material3.Surface
+import app.moshu.journal.data.export.MarkdownExport
 import app.moshu.journal.data.db.EntryEntity
 import app.moshu.journal.data.media.ImageStorage
 import app.moshu.journal.ui.components.AiActions
@@ -126,6 +129,8 @@ fun EntryDetailScreen(
     modifier: Modifier = Modifier,
     /** 点开 `[[链接]]` 或反链时跳到那条记忆；由导航层提供。 */
     onOpenLink: (Long) -> Unit = {},
+    /** 切到相邻条目（左右滑动或菜单里的上一条/下一条）。 */
+    onOpenSibling: (Long) -> Unit = {},
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val entry = state.entry
@@ -145,6 +150,8 @@ fun EntryDetailScreen(
     val bodyFontSize = FONT_STEPS[fontStep].first
     val links by viewModel.links.collectAsStateWithLifecycle()
     val backlinks by viewModel.backlinks.collectAsStateWithLifecycle()
+    val neighbors by viewModel.neighbors.collectAsStateWithLifecycle()
+    val (previousEntry, nextEntry) = neighbors
     var moreMenu by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     // 单条导出成 .md：整库导出解决的是备份，这里解决的是「把这一条发给别人 / 存进笔记库」。
@@ -202,7 +209,29 @@ fun EntryDetailScreen(
         return
     }
 
-    Column(modifier.fillMaxSize()) {
+    // 左右滑动切换相邻条目。编辑态与图片查看态禁用：
+    // 编辑时水平滑动用于移动光标/选择文字，抢过来会让输入变得不可用。
+    val swipeEnabled = !editing && selectedImage == null
+    val swipeModifier = if (swipeEnabled && (previousEntry != null || nextEntry != null)) {
+        Modifier.pointerInput(entry?.id, previousEntry?.id, nextEntry?.id) {
+            var totalDrag = 0f
+            detectHorizontalDragGestures(
+                onDragStart = { totalDrag = 0f },
+                onDragEnd = {
+                    // 阈值取 96dp：太小会在纵向滚动时误触发。
+                    val threshold = 96.dp.toPx()
+                    when {
+                        totalDrag > threshold -> previousEntry?.let { onOpenSibling(it.id) }
+                        totalDrag < -threshold -> nextEntry?.let { onOpenSibling(it.id) }
+                    }
+                    totalDrag = 0f
+                },
+                onHorizontalDrag = { _, delta -> totalDrag += delta },
+            )
+        }
+    } else Modifier
+
+    Column(modifier.fillMaxSize().then(swipeModifier)) {
         MoShuPageHeader(
             title = if (editing) "编辑记忆" else "记忆详情",
             // 改过之后要能看出这条不是原样，否则用户无法判断 AI 是否已重写。
@@ -228,6 +257,17 @@ fun EntryDetailScreen(
                     Box {
                         IconButton(onClick = { moreMenu = true }) { Icon(Icons.Rounded.MoreVert, "更多操作") }
                         DropdownMenu(expanded = moreMenu, onDismissRequest = { moreMenu = false }) {
+                            // 手势之外也给显式入口：不是所有人都知道可以左右滑。
+                            DropdownMenuItem(
+                                text = { Text("上一条" + (previousEntry?.let { " · " + it.content.take(10).replace('\n', ' ') } ?: "")) },
+                                enabled = previousEntry != null,
+                                onClick = { moreMenu = false; previousEntry?.let { onOpenSibling(it.id) } },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("下一条" + (nextEntry?.let { " · " + it.content.take(10).replace('\n', ' ') } ?: "")) },
+                                enabled = nextEntry != null,
+                                onClick = { moreMenu = false; nextEntry?.let { onOpenSibling(it.id) } },
+                            )
                             DropdownMenuItem(
                                 text = { Text("分享") },
                                 leadingIcon = { Icon(Icons.Rounded.Share, null) },
@@ -701,28 +741,10 @@ private fun splitTags(raw: String): List<String> = raw.split(',', '，', '#').ma
 private val FONT_STEPS = listOf(15.sp to "小", 17.sp to "标准", 20.sp to "大")
 
 /** 导出文件名：用正文首行当标题，去掉不能出现在文件名里的字符。 */
-private fun entryTitleForFile(entry: EntryEntity): String {
-    val raw = entry.summary.ifBlank { entry.content }.lineSequence().firstOrNull { it.isNotBlank() }.orEmpty()
-    val cleaned = raw.replace(Regex("[\\\\/:*?\"<>|\\n\\r]"), " ").trim().take(30)
-    return cleaned.ifBlank { "记忆-${SimpleDateFormat("yyyyMMdd-HHmm", Locale.CHINA).format(Date(entry.createdAt))}" }
-}
+private fun entryTitleForFile(entry: EntryEntity): String = MarkdownExport.titleForFile(entry)
 
 /** 单条 Markdown：概括 + 正文 + 元信息。不含任何密钥或服务地址。 */
-private fun entryMarkdown(entry: EntryEntity): String = buildString {
-    appendLine("# ${entryTitleForFile(entry)}")
-    appendLine()
-    appendLine("- 时间：${SimpleDateFormat("yyyy年M月d日 HH:mm", Locale.CHINA).format(Date(entry.createdAt))}")
-    appendLine("- 分类：${Category.NAMES.getOrElse(entry.categoryId) { "未分类" }}")
-    if (entry.mood.isNotBlank()) appendLine("- 情绪：${moodLabel(entry.mood)}")
-    val tags = splitTags(entry.tagsJson)
-    if (tags.isNotEmpty()) appendLine("- 标签：${tags.joinToString(" ") { "#$it" }}")
-    if (entry.summary.isNotBlank()) {
-        appendLine()
-        appendLine("> ${entry.summary}")
-    }
-    appendLine()
-    appendLine(entry.content)
-}
+private fun entryMarkdown(entry: EntryEntity): String = MarkdownExport.single(entry)
 
 /** `[[标题]]` 匹配。与仓库层保持同一形态，但这里只负责渲染。 */
 private val INLINE_LINK_RE = Regex("\\[\\[([^\\[\\]]{1,40})]]")

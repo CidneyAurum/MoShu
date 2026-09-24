@@ -61,6 +61,8 @@ class SettingsRepository(context: Context) {
         val AI_USAGE_TOTAL_TOKENS = longPreferencesKey("ai_usage_total_tokens")
         // 已发现的模型列表，按 baseUrl 存，避免每次进设置页都要重新拉取
         val AI_MODELS_BY_URL = stringPreferencesKey("ai_models_by_url")
+        /** 每天自动把完整备份写进应用私有目录。 */
+        val AUTO_BACKUP = booleanPreferencesKey("auto_backup_enabled")
     }
 
     /** 读取按 URL 缓存模型的归一化键，末尾斜杠不影响命中。 */
@@ -296,5 +298,13 @@ class SettingsRepository(context: Context) {
 
     suspend fun completeOnboarding() {
         appContext.dataStore.edit { it[Keys.ONBOARDING_DONE] = true }
+    }
+
+    /** 每天自动备份开关。默认关闭：备份会占空间，不该由应用替用户决定。 */
+    val autoBackupEnabled: Flow<Boolean> =
+        appContext.dataStore.data.map { it[Keys.AUTO_BACKUP] ?: false }
+
+    suspend fun saveAutoBackup(enabled: Boolean) {
+        appContext.dataStore.edit { it[Keys.AUTO_BACKUP] = enabled }
     }
 }
