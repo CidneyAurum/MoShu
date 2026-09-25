@@ -70,6 +70,10 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -250,6 +254,8 @@ fun EntryCard(
     selected: Boolean = false,
     /** 多选导出模式：整张卡变成一个可勾选项，长按菜单收起。 */
     selectionMode: Boolean = false,
+    /** 当前搜索词。非空时在概括与正文里把命中部分标出来。 */
+    highlight: String = "",
 ) {
     var menu by remember { mutableStateOf(false) }
     // 多选时换成 toggleable + Checkbox 角色，TalkBack 才会读出「复选框，已选中」。
@@ -303,10 +309,21 @@ fun EntryCard(
                     )
                 }
                 if (entry.summary.isNotBlank()) {
-                    Text(entry.summary, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        highlightMatches(entry.summary, highlight),
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
                 if (entry.content.isNotBlank()) {
-                    Text(entry.content, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 4, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        highlightMatches(entry.content, highlight),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 4,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
                 if (attachments.isNotEmpty()) EntryImageStrip(attachments.take(3))
                 val tags = parseTags(entry.tagsJson)
@@ -374,6 +391,43 @@ private fun EntryCardMenu(expanded: Boolean, entry: EntryEntity, actions: EntryC
 }
 
 /** 用系统分享面板把一条记忆发出去。只拼文本，不涉及图片或密钥。 */
+/**
+ * 把 [query] 在 [text] 里的命中片段标上底色。
+ *
+ * 搜索结果里一眼看不出「为什么这条会被搜出来」，得逐行读过去——
+ * 标出来之后扫一眼就知道命中在哪，这是搜索该有的反馈。
+ * 未搜索或没命中时返回原文本的 AnnotatedString。
+ */
+fun highlightMatches(text: String, query: String): AnnotatedString {
+    val needle = query.trim()
+    // 未搜索或这条没命中时也要走 AnnotatedString：Material3 的 Text 只有 String 与
+    // AnnotatedString 两个重载，没有 CharSequence 版本。
+    if (needle.isEmpty() || !text.contains(needle, ignoreCase = true)) return AnnotatedString(text)
+    return buildAnnotatedString {
+        var cursor = 0
+        while (true) {
+            val at = text.indexOf(needle, cursor, ignoreCase = true)
+            if (at < 0) {
+                append(text.substring(cursor))
+                break
+            }
+            append(text.substring(cursor, at))
+            withStyle(SpanStyle(background = HighlightColor, fontWeight = FontWeight.SemiBold)) {
+                append(text.substring(at, at + needle.length))
+            }
+            cursor = at + needle.length
+        }
+    }
+}
+
+/**
+ * 命中底色。
+ *
+ * 不用主题色：底色要能在深浅两种主题下都保持正文可读，
+ * 固定的浅黄在两套主题里都够淡，不会把文字吃掉。
+ */
+private val HighlightColor = androidx.compose.ui.graphics.Color(0x66FFD54F)
+
 fun shareEntryText(entry: EntryEntity): String = buildString {
     if (entry.summary.isNotBlank()) appendLine(entry.summary)
     append(entry.content)

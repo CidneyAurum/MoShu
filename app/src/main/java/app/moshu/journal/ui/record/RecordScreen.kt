@@ -367,6 +367,8 @@ fun MemoryScreen(
                         ) {
                             EntryCard(
                                 entry = entry,
+                                // 搜索态下把命中的词标出来：否则要逐张卡读完才知道它为什么会被搜出来。
+                                highlight = state.filters.query,
                                 onClick = {
                                     if (state.selecting) viewModel.toggleSelected(entry.id) else onOpenEntry(entry.id)
                                 },
