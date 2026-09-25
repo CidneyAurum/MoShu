@@ -76,5 +76,16 @@
                 <action android:name="android.intent.action.TIME_SET" />
             </intent-filter>
         </receiver>
+        <!-- 分享图片要给 content:// URI：Android 7 起直接传 file:// 会抛 FileUriExposedException。
+             只暴露 attachments/ 一个目录，数据库与设置都不在共享范围内。 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>

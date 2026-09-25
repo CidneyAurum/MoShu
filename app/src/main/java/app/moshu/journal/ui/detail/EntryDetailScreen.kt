@@ -5,6 +5,8 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.Arrangement
@@ -17,6 +19,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -56,13 +61,16 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -106,6 +114,8 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.rounded.ZoomIn
+import androidx.compose.material.icons.rounded.ZoomOut
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.StarBorder
 import androidx.compose.material.icons.rounded.StarOutline
@@ -118,6 +128,7 @@ import app.moshu.journal.ui.components.MoShuMessageBar
 import app.moshu.journal.ui.components.MoShuSectionTitle
 import app.moshu.journal.ui.components.rememberCopyText
 import app.moshu.journal.ui.components.THUMBNAIL_TARGET_PX
+import app.moshu.journal.ui.components.shareLocalImage
 import app.moshu.journal.ui.components.shareEntry
 import app.moshu.journal.ui.theme.OnScrim
 
@@ -525,28 +536,133 @@ fun EntryDetailScreen(
         val index = state.attachments.indexOfFirst { it.id == image.id }
         // 多图条目要能左右滑动翻页；只给一个「3 / 5」文字等于让用户退出去再点下一张。
         val pagerState = rememberPagerState(initialPage = index.coerceAtLeast(0)) { state.attachments.size }
+        val page = pagerState.currentPage
+        // 缩放状态按页重置：在第 1 张上放大过，翻到第 2 张还停在上次的倍数会很突兀。1f = 适应屏幕。
+        var scale by remember(page) { mutableFloatStateOf(1f) }
+        var offset by remember(page) { mutableStateOf(Offset.Zero) }
+        val current = state.attachments.getOrNull(page)
         Dialog(onDismissRequest = { selectedImage = null }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
             Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim), contentAlignment = Alignment.Center) {
-                HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
-                    val attachment = state.attachments.getOrNull(page) ?: return@HorizontalPager
+                HorizontalPager(
+                    state = pagerState,
+                    modifier = Modifier.fillMaxSize(),
+                    // 放大之后横向拖动是「看图片的另一半」，不能再翻页，否则永远看不全。
+                    userScrollEnabled = scale <= 1.01f,
+                ) { pageIndex ->
+                    val attachment = state.attachments.getOrNull(pageIndex) ?: return@HorizontalPager
+                    val zoomed = pageIndex == page
                     LocalImage(
                         attachment.localPath,
-                        Modifier.fillMaxSize(),
+                        Modifier.fillMaxSize().graphicsLayer {
+                            // 只有当前页跟随缩放状态；邻居页保持适应屏幕，翻页时不会闪一下放大态。
+                            if (zoomed) {
+                                scaleX = scale
+                                scaleY = scale
+                                translationX = offset.x
+                                translationY = offset.y
+                            }
+                        },
                         ContentScale.Fit,
-                        contentDescription = "第 ${page + 1} 张，共 ${state.attachments.size} 张",
+                        contentDescription = "第 ${pageIndex + 1} 张，共 ${state.attachments.size} 张",
                         targetPx = FULL_IMAGE_PX,
+                    )
+                }
+                Box(
+                    Modifier.fillMaxSize()
+                        .pointerInput(page) {
+                            detectTransformGestures { _, pan, zoom, _ ->
+                                val next = (scale * zoom).coerceIn(MIN_IMAGE_SCALE, MAX_IMAGE_SCALE)
+                                scale = next
+                                if (next <= 1.01f) {
+                                    offset = Offset.Zero
+                                } else {
+                                    // 限制平移范围，避免把图片拖出屏幕后找不回来。
+                                    val maxX = (size.width * (next - 1f)) / 2f
+                                    val maxY = (size.height * (next - 1f)) / 2f
+                                    offset = Offset(
+                                        (offset.x + pan.x).coerceIn(-maxX, maxX),
+                                        (offset.y + pan.y).coerceIn(-maxY, maxY),
+                                    )
+                                }
+                            }
+                        }
+                        .pointerInput(page) {
+                            detectTapGestures(
+                                onDoubleTap = { pos ->
+                                    if (scale > 1.01f) {
+                                        scale = 1f
+                                        offset = Offset.Zero
+                                    } else {
+                                        // 以双击点为中心放大：位移取该点相对屏幕中心的偏移量放大后的值。
+                                        scale = DOUBLE_TAP_SCALE
+                                        val cx = size.width / 2f
+                                        val cy = size.height / 2f
+                                        val maxX = (size.width * (DOUBLE_TAP_SCALE - 1f)) / 2f
+                                        val maxY = (size.height * (DOUBLE_TAP_SCALE - 1f)) / 2f
+                                        offset = Offset(
+                                            (-(pos.x - cx) * DOUBLE_TAP_SCALE).coerceIn(-maxX, maxX),
+                                            (-(pos.y - cy) * DOUBLE_TAP_SCALE).coerceIn(-maxY, maxY),
+                                        )
+                                    }
+                                },
+                            )
+                        },
+                )
+                // 放大后给一句状态提示，用户才知道双击可以还原。
+                if (scale > 1.01f) {
+                    Text(
+                        "已放大 ${"%.1f".format(Locale.CHINA, scale)}× · 双击还原",
+                        color = OnScrim,
+                        style = MaterialTheme.typography.labelSmall,
+                        // 再抬一个导航栏高度：贴着 40dp 会被手势条压住，看不清写了什么。
+                        modifier = Modifier.align(Alignment.BottomCenter)
+                            .padding(bottom = 64.dp)
+                            .windowInsetsPadding(WindowInsets.navigationBars)
+                            .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.5f), CircleShape)
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
                     )
                 }
                 if (state.attachments.size > 1) {
                     Text(
-                        "${pagerState.currentPage + 1} / ${state.attachments.size}",
+                        "${page + 1} / ${state.attachments.size}",
                         color = OnScrim,
                         style = MaterialTheme.typography.labelLarge,
                         modifier = Modifier.align(Alignment.TopStart).padding(24.dp).background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.5f), CircleShape).padding(horizontal = 12.dp, vertical = 6.dp),
                     )
                 }
-                IconButton(onClick = { selectedImage = null }, modifier = Modifier.align(Alignment.TopEnd).padding(20.dp).background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.5f), CircleShape)) {
-                    Icon(Icons.Rounded.Close, "关闭", tint = OnScrim)
+                Row(Modifier.align(Alignment.TopEnd).padding(20.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    // 双击缩放没有可见提示，多数人不会去试；给一个能看见的开关。
+                    // 有它之后「放大」这件事既可发现，也能一步步确认。
+                    IconButton(
+                        onClick = {
+                            if (scale > 1.01f) {
+                                scale = 1f
+                                offset = Offset.Zero
+                            } else {
+                                scale = DOUBLE_TAP_SCALE
+                            }
+                        },
+                        modifier = Modifier.background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.5f), CircleShape),
+                    ) {
+                        Icon(
+                            if (scale > 1.01f) Icons.Rounded.ZoomOut else Icons.Rounded.ZoomIn,
+                            if (scale > 1.01f) "缩小到适应屏幕" else "放大图片",
+                            tint = OnScrim,
+                        )
+                    }
+                    // 放大看的往往正是要发给别人的那张，先放大再分享是自然顺序。
+                    IconButton(
+                        onClick = { current?.let { shareLocalImage(context, it.localPath) } },
+                        modifier = Modifier.background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.5f), CircleShape),
+                    ) {
+                        Icon(Icons.Rounded.Share, "分享这张图片", tint = OnScrim)
+                    }
+                    IconButton(
+                        onClick = { selectedImage = null },
+                        modifier = Modifier.background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.5f), CircleShape),
+                    ) {
+                        Icon(Icons.Rounded.Close, "关闭", tint = OnScrim)
+                    }
                 }
             }
         }
@@ -738,6 +854,11 @@ private fun InfoPill(text: String) {
 private fun splitTags(raw: String): List<String> = raw.split(',', '，', '#').map { it.trim() }.filter { it.isNotBlank() }.distinct().take(6)
 
 /** 正文字号三档。做滑杆反而难对准，档位制在手机上更好用。 */
+/** 图片缩放范围。下限 1 倍（适应屏幕），上限 5 倍足够看清照片细节。 */
+private const val MIN_IMAGE_SCALE = 1f
+private const val MAX_IMAGE_SCALE = 5f
+private const val DOUBLE_TAP_SCALE = 2.5f
+
 private val FONT_STEPS = listOf(15.sp to "小", 17.sp to "标准", 20.sp to "大")
 
 /** 导出文件名：用正文首行当标题，去掉不能出现在文件名里的字符。 */

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FileProvider 只暴露应用私有目录里的附件目录。
+
+  分享图片必须给出 content:// URI：Android 7 起直接把 file:// 塞进 Intent 会抛
+  FileUriExposedException。这里只开最小范围（attachments/），
+  数据库、设置、聊天记录都不在共享路径里。
+-->
+<paths>
+    <files-path name="attachments" path="attachments/" />
+</paths>

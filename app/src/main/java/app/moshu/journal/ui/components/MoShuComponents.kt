@@ -74,6 +74,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import app.moshu.journal.MoShuApp
 import app.moshu.journal.data.db.AttachmentEntity
 import app.moshu.journal.data.db.Category
 import app.moshu.journal.data.db.EntryAiState
@@ -380,6 +381,33 @@ fun shareEntry(context: Context, entry: EntryEntity) {
         putExtra(Intent.EXTRA_TEXT, shareEntryText(entry))
     }
     runCatching { context.startActivity(Intent.createChooser(intent, "分享这条记忆")) }
+}
+
+/**
+ * 分享一张本地图片。
+ *
+ * 图片存在应用私有目录里，必须经 FileProvider 换成 content:// URI，
+ * 并带上读权限，否则接收方打开就是空白。
+ */
+fun shareLocalImage(context: Context, path: String) {
+    val file = java.io.File(path)
+    if (!file.isFile) {
+        MoShuApp.instance.notices.post("图片文件已不在本机")
+        return
+    }
+    runCatching {
+        val uri = androidx.core.content.FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            file,
+        )
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "image/*"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(intent, "分享图片"))
+    }.onFailure { MoShuApp.instance.notices.post("分享失败，请稍后再试") }
 }
 
 @Composable
