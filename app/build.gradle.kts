@@ -21,8 +21,8 @@ android {
         applicationId = "app.moshu.journal"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10
-        versionName = "1.6.1"
+        versionCode = 11
+        versionName = "1.7.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // 所有变体都声明字段，Release 永远保持为空，避免本机密钥进入成品。
