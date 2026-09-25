@@ -2,6 +2,7 @@ package app.moshu.journal.ui.record
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,6 +19,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CalendarMonth
+import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.EditNote
 import androidx.compose.material.icons.rounded.ErrorOutline
@@ -25,6 +27,7 @@ import androidx.compose.material.icons.rounded.LibraryAddCheck
 import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SearchOff
+import androidx.compose.material.icons.rounded.StarBorder
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -41,9 +44,12 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -320,23 +326,63 @@ fun MemoryScreen(
                     }
                     items(dayEntries, key = { it.id }) { entry ->
                         val checked = entry.id in state.selectedIds
-                        EntryCard(
-                            entry = entry,
-                            onClick = {
-                                if (state.selecting) viewModel.toggleSelected(entry.id) else onOpenEntry(entry.id)
+                        // 右滑收藏、左滑删除，与行动页同一套手势语言。
+                        // 动作后返回 false 让卡片弹回：删除有撤销窗口，条目当场消失会让人以为误触了。
+                        val swipeState = rememberSwipeToDismissBoxState(
+                            confirmValueChange = { value ->
+                                when (value) {
+                                    SwipeToDismissBoxValue.StartToEnd -> viewModel.toggleStarred(entry)
+                                    SwipeToDismissBoxValue.EndToStart -> viewModel.delete(entry)
+                                    SwipeToDismissBoxValue.Settled -> Unit
+                                }
+                                false
                             },
-                            attachments = state.attachments[entry.id].orEmpty(),
-                            selectionMode = state.selecting,
-                            selected = checked,
-                            actions = if (state.selecting) null else EntryCardActions(
-                                onEdit = { onOpenEntry(entry.id) },
-                                onDuplicate = { viewModel.duplicate(entry) },
-                                onTogglePin = { viewModel.togglePinned(entry) },
-                                onToggleStar = { viewModel.toggleStarred(entry) },
-                                onShare = { shareEntry(context, entry) },
-                                onDelete = { viewModel.delete(entry) },
-                            ),
                         )
+                        SwipeToDismissBox(
+                            state = swipeState,
+                            // 多选态下关掉手势：长按选择与横滑会互相抢事件。
+                            gesturesEnabled = !state.selecting,
+                            backgroundContent = {
+                                val toEnd = swipeState.dismissDirection == SwipeToDismissBoxValue.StartToEnd
+                                val tint = if (toEnd) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                                val label = if (toEnd) (if (entry.isStarred) "取消收藏" else "收藏") else "删除"
+                                Row(
+                                    Modifier
+                                        .fillMaxSize()
+                                        .background(tint.copy(alpha = 0.12f), MaterialTheme.shapes.large)
+                                        .padding(horizontal = 20.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = if (toEnd) Arrangement.Start else Arrangement.End,
+                                ) {
+                                    Icon(
+                                        if (toEnd) (if (entry.isStarred) Icons.Rounded.StarBorder else Icons.Rounded.Star) else Icons.Rounded.DeleteOutline,
+                                        null,
+                                        Modifier.size(18.dp),
+                                        tint = tint,
+                                    )
+                                    Spacer(Modifier.size(8.dp))
+                                    Text(label, style = MaterialTheme.typography.labelLarge, color = tint)
+                                }
+                            },
+                        ) {
+                            EntryCard(
+                                entry = entry,
+                                onClick = {
+                                    if (state.selecting) viewModel.toggleSelected(entry.id) else onOpenEntry(entry.id)
+                                },
+                                attachments = state.attachments[entry.id].orEmpty(),
+                                selectionMode = state.selecting,
+                                selected = checked,
+                                actions = if (state.selecting) null else EntryCardActions(
+                                    onEdit = { onOpenEntry(entry.id) },
+                                    onDuplicate = { viewModel.duplicate(entry) },
+                                    onTogglePin = { viewModel.togglePinned(entry) },
+                                    onToggleStar = { viewModel.toggleStarred(entry) },
+                                    onShare = { shareEntry(context, entry) },
+                                    onDelete = { viewModel.delete(entry) },
+                                ),
+                            )
+                        }
                     }
                 }
             }

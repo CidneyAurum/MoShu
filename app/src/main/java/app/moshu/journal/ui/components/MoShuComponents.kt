@@ -289,6 +289,12 @@ fun EntryCard(
                         Spacer(Modifier.width(8.dp))
                         Icon(Icons.Rounded.PushPin, contentDescription = "已置顶", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary)
                     }
+                    // 收藏也要在卡片上看得见：右滑收藏是个无提示的手势，
+                    // 不落一个可见标记的话，用户根本不知道刚才那一下生效没有。
+                    if (entry.isStarred) {
+                        Spacer(Modifier.width(6.dp))
+                        Icon(Icons.Rounded.Star, contentDescription = "已收藏", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary)
+                    }
                     Spacer(Modifier.weight(1f))
                     Text(
                         relativeTime(entry.createdAt),
