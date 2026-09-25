@@ -77,6 +77,7 @@ import app.moshu.journal.ui.components.MoShuMessageBar
 import app.moshu.journal.ui.components.MoShuPageHeader
 import app.moshu.journal.ui.components.MoShuSectionTitle
 import app.moshu.journal.ui.components.MessageSeverity
+import java.time.Instant
 import java.time.LocalDate
 import java.time.YearMonth
 import java.time.format.DateTimeFormatter
@@ -237,6 +238,32 @@ fun CalendarScreen(
                 }
             }
         }
+    }
+
+    // 点已有安排进这里改。原先 onEdit 只是把 editing 置了位，没有任何地方读它，
+    // 于是点事件行完全没反应——建完的安排只能删、不能改。
+    editing?.let { event ->
+        EventEditorSheet(
+            initialDay = Instant.ofEpochMilli(event.startAt).atZone(java.time.ZoneId.systemDefault()).toLocalDate(),
+            initialEvent = event,
+            onDismiss = { editing = null },
+            onSave = { draft ->
+                viewModel.update(
+                    existing = event,
+                    title = draft.title,
+                    note = draft.note,
+                    day = draft.day,
+                    minuteOfDay = draft.minuteOfDay,
+                    allDay = draft.allDay,
+                    repeat = draft.repeat,
+                    reminderOffsetMin = draft.reminderOffsetMin,
+                    soundUri = draft.soundUri,
+                    soundLabel = draft.soundLabel,
+                    importance = draft.importance,
+                )
+                editing = null
+            },
+        )
     }
 
     if (creating || manualDraft != null) {

@@ -7,6 +7,8 @@ import app.moshu.journal.MoShuApp
 import app.moshu.journal.data.Connectivity
 import app.moshu.journal.data.db.AttachmentEntity
 import app.moshu.journal.data.db.EntryAiState
+import app.moshu.journal.reminder.EventReminderScheduler
+import app.moshu.journal.reminder.Notifications
 import app.moshu.journal.data.db.EntryEntity
 import app.moshu.journal.data.db.EventEntity
 import app.moshu.journal.data.db.TodoEntity
@@ -19,6 +21,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -177,6 +180,69 @@ class TodayViewModel : ViewModel() {
             upcomingEvents.value = all
         }
     }
+
+    /**
+     * 修改今日安排。与日历页同一套语义：先撤旧闹钟再写库。
+     */
+    fun updateEvent(
+        existing: EventEntity,
+        title: String,
+        note: String,
+        day: LocalDate,
+        minuteOfDay: Int,
+        allDay: Boolean,
+        repeat: String,
+        reminderOffsetMin: Int,
+        soundUri: String,
+        soundLabel: String,
+        importance: String,
+    ) {
+        val text = title.trim()
+        if (text.isEmpty()) return
+        viewModelScope.launch {
+            EventReminderScheduler.cancel(app, existing)
+            val zone = ZoneId.systemDefault()
+            val updated = existing.copy(
+                title = text,
+                note = note.trim(),
+                startAt = if (allDay) day.atStartOfDay(zone).toInstant().toEpochMilli()
+                else day.atStartOfDay(zone).plusMinutes(minuteOfDay.toLong()).toInstant().toEpochMilli(),
+                allDay = allDay,
+                repeatRule = repeat,
+                reminderOffsetMin = reminderOffsetMin,
+                soundUri = soundUri,
+                soundLabel = soundLabel,
+                importance = importance,
+                updatedAt = System.currentTimeMillis(),
+            )
+            app.database.eventDao().update(updated)
+            Notifications.ensureEventChannel(app, updated.soundUri, updated.soundLabel, updated.importance)
+            if (updated.hasReminder && !updated.done) EventReminderScheduler.schedule(app, updated)
+            refreshEvents()
+        }
+    }
+
+    /** 勾掉今天的安排。和日历页同一套语义：完成即撤掉提醒，取消完成则按需重排。 */
+    fun toggleEventDone(event: EventEntity) {
+        viewModelScope.launch {
+            val updated = event.copy(done = !event.done, updatedAt = System.currentTimeMillis())
+            app.database.eventDao().update(updated)
+            if (updated.done) {
+                EventReminderScheduler.cancel(app, updated)
+            } else if (updated.hasReminder) {
+                Notifications.ensureEventChannel(app, updated.soundUri, updated.soundLabel, updated.importance)
+                EventReminderScheduler.schedule(app, updated)
+            }
+            refreshEvents()
+        }
+    }
+
+    /** 今日安排的完成情况。主页要能回答「今天还剩几件事」，而不只是列出来。 */
+    val todayDoneCount: StateFlow<Int> = app.database.eventDao()
+        .observeRange(LocalDate.now().atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli(),
+            LocalDate.now().plusDays(1).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli())
+        .map { list -> list.count { it.done } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
 
     fun onDraftChange(value: String) {
         draft.value = value

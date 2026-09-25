@@ -33,10 +33,12 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.EditNote
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Lightbulb
+import androidx.compose.material.icons.rounded.RadioButtonUnchecked
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.material3.FilterChip
@@ -77,6 +79,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.moshu.journal.MoShuApp
 import app.moshu.journal.data.media.ImageStorage
+import app.moshu.journal.ui.calendar.EventEditorSheet
 import app.moshu.journal.ui.components.EntryCard
 import app.moshu.journal.ui.components.EntryCardActions
 import app.moshu.journal.ui.components.MoShuEmptyState
@@ -118,12 +121,15 @@ fun TodayScreen(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val today = LocalDate.now()
     var promptOffset by remember(today) { mutableIntStateOf(0) }
+    /** 正在编辑的今日安排；点卡片进来改。 */
+    var editingEvent by remember { mutableStateOf<EventEntity?>(null) }
     val prompt = prompts[(today.dayOfYear + promptOffset) % prompts.size]
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     // 未配置 AI 时不该展示「整理中」这类卡片：它在宣传一个关掉的功能，还像卡住的任务。
     val aiConfigured by remember { MoShuApp.instance.settings.aiConfig.map { it.valid } }
         .collectAsStateWithLifecycle(false)
+    val todayDoneCount by viewModel.todayDoneCount.collectAsStateWithLifecycle()
     val retryAi: (Long) -> Unit = onRetryAi ?: { id -> scope.launch { MoShuApp.instance.journal.reEnrich(id) } }
 
     // 整理完成是一次静默的写库，必须给一次可见反馈，否则用户不知道发生了什么。
@@ -246,12 +252,41 @@ fun TodayScreen(
                 MemoryCard(entry = entry, onClick = { onOpenEntry(entry.id) }, modifier = Modifier.padding(horizontal = 20.dp))
             }
         }
+        // 今天的安排都做完了：不能整块消失（那等于什么反馈都没有），
+        // 给一行明确的收尾语，用户才知道「今天的事清空了」而不是「安排丢了」。
+        if (state.todayEvents.isEmpty() && todayDoneCount > 0) {
+            item {
+                Surface(
+                    modifier = Modifier.padding(horizontal = 20.dp).fillMaxWidth(),
+                    shape = MaterialTheme.shapes.large,
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                ) {
+                    Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Rounded.CheckCircle,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.size(10.dp))
+                        Text(
+                            "今天的安排已全部完成 · 共 $todayDoneCount 项",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
         // 安排放在记忆之前：时间敏感的事先看到，才不会被「记录」挤到下面。
         if (state.todayEvents.isNotEmpty() || state.upcomingEvents.isNotEmpty()) {
             item {
                 Row(Modifier.padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
                     MoShuSectionTitle(
-                        if (state.todayEvents.isEmpty()) "接下来的安排" else "今天的安排 · ${state.todayEvents.size}",
+                        if (state.todayEvents.isEmpty()) "接下来的安排"
+                        // 完成度比条数有用：回答的是「今天还剩几件事」。
+                        else if (todayDoneCount > 0) "今天的安排 · 已完成 $todayDoneCount，待办 ${state.todayEvents.size}"
+                        else "今天的安排 · ${state.todayEvents.size}",
                         action = "日历",
                         onAction = onOpenCalendar,
                     )
@@ -262,6 +297,8 @@ fun TodayScreen(
                 TodayEventRow(
                     event = event,
                     isToday = state.todayEvents.any { it.id == event.id },
+                    onToggleDone = { viewModel.toggleEventDone(event) },
+                    onEdit = { editingEvent = event },
                     modifier = Modifier.padding(horizontal = 20.dp),
                 )
             }
@@ -309,6 +346,31 @@ fun TodayScreen(
             }
         }
     }
+
+    // 与日历页共用同一个编辑器：两处各写一套表单，迟早会出现「这边能设重复那边不能」。
+    editingEvent?.let { event ->
+        EventEditorSheet(
+            initialDay = Instant.ofEpochMilli(event.startAt).atZone(ZoneId.systemDefault()).toLocalDate(),
+            initialEvent = event,
+            onDismiss = { editingEvent = null },
+            onSave = { draft ->
+                viewModel.updateEvent(
+                    existing = event,
+                    title = draft.title,
+                    note = draft.note,
+                    day = draft.day,
+                    minuteOfDay = draft.minuteOfDay,
+                    allDay = draft.allDay,
+                    repeat = draft.repeat,
+                    reminderOffsetMin = draft.reminderOffsetMin,
+                    soundUri = draft.soundUri,
+                    soundLabel = draft.soundLabel,
+                    importance = draft.importance,
+                )
+                editingEvent = null
+            },
+        )
+    }
 }
 
 /**
@@ -319,18 +381,29 @@ fun TodayScreen(
 private fun TodayEventRow(
     event: EventEntity,
     isToday: Boolean,
+    onToggleDone: () -> Unit,
+    onEdit: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val zone = remember { ZoneId.systemDefault() }
     val dayFormat = remember { DateTimeFormatter.ofPattern("M月d日", Locale.CHINA) }
     val day = remember(event.startAt) { Instant.ofEpochMilli(event.startAt).atZone(zone).toLocalDate() }
     Card(
-        modifier = modifier.fillMaxWidth(),
+        // 主页上的安排原先既点不动也勾不了：只能看，要改还得先跳到日历页。
+        // 时间敏感的事在主页就该能直接处理掉。
+        modifier = modifier.fillMaxWidth().clickable(onClickLabel = "编辑这项安排", onClick = onEdit),
         shape = MaterialTheme.shapes.large,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
     ) {
-        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.padding(start = 6.dp, end = 14.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onToggleDone) {
+                Icon(
+                    if (event.done) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
+                    contentDescription = if (event.done) "标记为未完成" else "标记为已完成",
+                    tint = if (event.done) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(

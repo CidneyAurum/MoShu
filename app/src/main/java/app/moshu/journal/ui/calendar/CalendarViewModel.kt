@@ -239,6 +239,49 @@ class CalendarViewModel : ViewModel() {
         }
     }
 
+    /**
+     * 修改已有安排。
+     *
+     * 先把旧闹钟撤掉再写库：改了时间却不撤旧的，到点会按旧时间响一次，
+     * 用户会以为改时间没生效。
+     */
+    fun update(
+        existing: EventEntity,
+        title: String,
+        note: String,
+        day: LocalDate,
+        minuteOfDay: Int,
+        allDay: Boolean,
+        repeat: String,
+        reminderOffsetMin: Int,
+        soundUri: String,
+        soundLabel: String,
+        importance: String,
+    ) {
+        val text = title.trim()
+        if (text.isEmpty()) return
+        viewModelScope.launch {
+            EventReminderScheduler.cancel(app, existing)
+            val updated = existing.copy(
+                title = text,
+                note = note.trim(),
+                startAt = if (allDay) startOfDay(day)
+                else day.atStartOfDay(zone).plusMinutes(minuteOfDay.toLong()).toInstant().toEpochMilli(),
+                allDay = allDay,
+                repeatRule = repeat,
+                reminderOffsetMin = reminderOffsetMin,
+                soundUri = soundUri,
+                soundLabel = soundLabel,
+                importance = importance,
+                updatedAt = System.currentTimeMillis(),
+            )
+            app.database.eventDao().update(updated)
+            Notifications.ensureEventChannel(app, updated.soundUri, updated.soundLabel, updated.importance)
+            if (updated.hasReminder && !updated.done) EventReminderScheduler.schedule(app, updated)
+            message.value = "已更新「${updated.title}」"
+        }
+    }
+
     fun toggleDone(event: EventEntity) {
         viewModelScope.launch {
             val updated = event.copy(done = !event.done, updatedAt = System.currentTimeMillis())
